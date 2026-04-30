@@ -18,7 +18,7 @@ app.add_middleware(
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
-# TextIn API 凭证（固定）
+# TextIn API 凭证
 TEXTIN_APP_ID = "0fd9239e2c07003f28d8262745cd3a92"
 TEXTIN_SECRET_CODE = "e87042c286a20aeb61790587432baadd"
 TEXTIN_API_URL = "https://api.textin.com/ai/service/v1/pdf_to_markdown"
@@ -136,8 +136,28 @@ def call_deepseek(text: str) -> str:
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
         "Content-Type": "application/json"
     }
+    
+    print("=== DeepSeek API 调用开始 ===")
+    print(f"API Key 前10位: {DEEPSEEK_API_KEY[:10]}...")
+    print(f"请求内容长度: {len(text[:12000])}")
+    
     response = requests.post(DEEPSEEK_API_URL, json=payload, headers=headers, timeout=120)
+    
+    print(f"DeepSeek API 状态码: {response.status_code}")
+    print(f"DeepSeek API 响应前500字符: {response.text[:500]}")
+    
+    if response.status_code != 200:
+        raise Exception(f"DeepSeek API HTTP错误: {response.status_code} - {response.text[:200]}")
+    
     data = response.json()
+    
+    if "error" in data:
+        raise Exception(f"DeepSeek API 错误: {data['error']}")
+    
+    if "choices" not in data or len(data["choices"]) == 0:
+        raise Exception(f"DeepSeek API 返回格式异常: {json.dumps(data)[:300]}")
+    
+    print("=== DeepSeek API 调用成功 ===")
     return data["choices"][0]["message"]["content"]
 
 
@@ -167,7 +187,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "parser": "textin"}
+    return {"status": "ok", "parser": "textin", "deepseek_configured": bool(DEEPSEEK_API_KEY)}
 
 
 @app.get("/")
@@ -187,7 +207,6 @@ button:hover {background: #357abd;}
 button:disabled {background: #b0c4de; cursor: not-allowed;}
 .result {background: #f9f9f9; border-radius: 12px; padding: 20px; margin-top: 20px; white-space: pre-wrap; font-family: monospace; font-size: 14px; line-height: 1.5; max-height: 600px; overflow-y: auto;}
 .loading {display: none; text-align: center; margin: 20px; color: #4a90e2;}
-.error {color: #d32f2f; background: #ffebee; padding: 12px; border-radius: 8px; margin: 20px 0;}
 </style>
 </head>
 <body>
