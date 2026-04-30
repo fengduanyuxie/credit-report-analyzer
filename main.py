@@ -221,7 +221,7 @@ async def analyze_credit_report(file: UploadFile = File(...)):
         if len(pdf_bytes) > 10 * 1024 * 1024:  # 限制 10MB
             raise HTTPException(status_code=400, detail="文件大小超过 10MB")
     except Exception as e:
-        raise HTTPException(status_code=400, detail(f"读取文件失败: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"读取文件失败: {str(e)}")
     
     # 3. 调用 ParseX 解析 PDF
     try:
@@ -235,7 +235,7 @@ async def analyze_credit_report(file: UploadFile = File(...)):
     try:
         analysis_result = call_deepseek(extracted_text)
     except Exception as e:
-        raise HTTPException(status_code=500, detail(f"大模型分析失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"大模型分析失败: {str(e)}")
     
     return JSONResponse(content={
         "success": True,
