@@ -421,6 +421,9 @@ async def analyze(file: UploadFile):
     
     try:
         markdown_text = parse_pdf_with_textin(pdf_bytes)
+        print("=== TextIn 完整解析结果（前5000字符）===")
+        print(markdown_text[:5000])
+        print("=========================================")
         
         report_date = extract_report_date(markdown_text)
         gender = extract_gender(markdown_text)
