@@ -423,12 +423,8 @@ async def analyze(file: UploadFile):
         markdown_text = parse_pdf_with_textin(pdf_bytes)
         
         # 调试打印：输出贷款相关部分
-        print("=== TextIn 解析结果：贷款相关部分 ===")
-        loan_section = re.search(r'## 贷款(.*?)(?=## |$)', markdown_text, re.DOTALL)
-        if loan_section:
-            print(loan_section.group(1)[:2000])
-        else:
-            print("未找到贷款部分")
+        print("=== TextIn 解析结果（完整前3000字符）===")
+        print(markdown_text[:3000])
         print("===================================")
         
         report_date = extract_report_date(markdown_text)
