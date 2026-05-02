@@ -1,15 +1,15 @@
 import os
+import re
 import json
-import base64
 import requests
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, Any
+from datetime import datetime
+from typing import Dict, Any, List, Tuple
 
 app = FastAPI()
 
-# 允许跨域（如果前端和后端分离）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,469 +18,733 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 从环境变量读取 API Keys（Railway 中配置）
+# ========== 配置 ==========
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-PARSEX_APP_ID = os.environ.get("PARSEX_APP_ID", "0fd9239e2c07003f28d8262745cd3a92")
-PARSEX_SECRET = os.environ.get("PARSEX_SECRET", "e87042c286a20aeb61790587432baadd")
-PARSEX_API_URL = os.environ.get("PARSEX_API_URL", "https://api.parsex.ai/v1/parse")
-
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
-# 系统提示词（完整版）
-SYSTEM_PROMPT = """你是一名资深的助贷风控专家，擅长解读征信报告。
+# TextIn 旧版 API 配置
+TEXTIN_APP_ID = "0fd9239e2c07003f28d8262745cd3a92"
+TEXTIN_SECRET_CODE = "e87042c286a20aeb61790587432baadd"
+TEXTIN_API_URL = "https://api.textin.com/ai/service/v1/pdf_to_markdown"
 
-请严格按以下要求分析并输出报告：
+# 小网贷关键词（机构名包含任一即视为小网贷）
+MICRO_KEYWORDS = [
+    "网商", "微众", "亿联", "金城", "裕民", "海峡", "振兴", "新网",
+    "苏商", "中关村", "富民", "锡商", "百信", "长安", "兰州",
+    "威海", "众邦", "蓝海", "华通", "华瑞", "友利"
+]
 
-## 输出要求
+# 房贷关键词
+HOUSING_KEYWORDS = ["个人住房", "住房贷款", "商用房", "公积金"]
 
-请按顺序输出两份报告：
+# 车贷关键词
+CAR_KEYWORDS = ["汽车"]
 
-### 第一部分：简要汇总（严格按以下格式，不添加任何额外说明）
-
-*基本信息
-
-性别：{从身份证第17位判断：奇数为男，偶数为女}
-
-年龄：{报告日期年份 - 出生年份，未过生日减1}
-
-婚姻：{已婚/未婚/未知}
-
-{% if 有风险预警 %}风险预警：{如有资产处置、垫款、当逾、非正常、公共记录则汇总显示}{% endif %}
-
-*查询记录
-
-30天内：{30天内贷款审批/信用卡审批次数，排除贷后管理}
-
-31-90天：{31-90天内同上}
-
-90-180天：{90-180天内同上}
-
-180-360天：{180-360天内同上}
-
-60天内小网贷：{60天内小网贷机构查询次数}
-
-60天内本人：{60天内本人查询次数}
-
-*5年内逾期
-
-总月数：{所有账户逾期月数总和}
-
-90天以上的账户数：{发生过90天以上逾期的账户数}
-
-*贷款
-
-{% if 贷款当逾 > 0 %}当逾：{贷款当前逾期账户数}个{% endif %}
-
-机构数：{未结清且有余额的贷款机构数}
-
-总余额：{所有贷款余额总和}万元
-
-{% if 房贷数 > 0 %}房贷数：{房贷笔数（含个人住房、商用房、公积金）}
-
-房贷余额：{房贷余额总和}万元{% endif %}
-
-{% if 车贷数 > 0 %}车贷数：{车贷笔数}
-
-车贷余额：{车贷余额总和}万元{% endif %}
-
-小网贷的机构数：{小网贷机构数（含余额为0的）}
-
-小网贷的余额：{小网贷余额总和}万元
-
-*信用卡
-
-{% if 信用卡当逾 > 0 %}当逾：{信用卡当前逾期账户数}个{% endif %}
-
-{% if 有非正常 %}非正常：{止付/冻结/呆账，格式：X个呆账，X.XX}{% endif %}
-
-机构数：{信用卡机构数（未销户、人民币、额度>0）}
-
-授信额：{信用卡总授信额度}万元
-
-已用额度：{信用卡已用额度}万元
-
-使用率：{使用率}%
-
-{% if 担保户数 > 0 %}
-
-*担保信息
-
-担保户数：{担保户数}
-
-担保余额：{担保余额}万元
-
-{% endif %}
-
-{% if 有公共记录 %}
-
-*公共记录
-
-{如有欠税、民事判决、强制执行、行政处罚，逐行列出}
-
-{% endif %}
-
-### 第二部分：展开分析
-
-请基于以上数据，生成一份专业、详细的征信分析报告，包含以下内容：
-
-1. 基本信息解读（年龄与婚姻分析、风险预警解读）
-2. 查询记录分析（频率评估、结构分析、资金紧张程度判断）
-3. 逾期记录分析（月数评估、90天以上分析、严重程度判断）
-4. 贷款信息分析（负债结构、房贷/车贷分析、小网贷依赖度、当逾解读）
-5. 信用卡信息分析（使用率评估、当逾/非正常分析、融资能力判断）
-6. 担保信息分析（如有）
-7. 公共记录分析（如有）
-8. 综合评估与风控建议（风险等级：正常/关注/次级/可疑/损失）
-
-## 提取规则
-
-1. **小网贷判断**：机构名称包含（网商、微众、亿联、金城、裕民、海峡、振兴、新网、苏商、中关村、富民、锡商、百信、长安、兰州、威海、众邦、蓝海、华通、华瑞、友利）或不含"银行"二字
-2. **车贷/房贷**：从小网贷中剔除
-3. **信用卡**：排除已销户、非人民币账户（美元账户不计入）
-4. **查询记录**：排除"贷后管理"
-5. **金额单位**：统一转换为万元
-6. **年龄**：使用周岁
-7. **值为0的项不显示**：包括：公共记录、担保信息、非正常、个呆账、当逾、车贷余额、车贷数、风险预警
-
-## 风险等级判定
-- **正常**：无逾期、无不良记录、负债合理
-- **关注**：有少量逾期（<3个月）、负债偏高
-- **次级**：有30-90天逾期、小网贷使用
-- **可疑**：有90天以上逾期、呆账、资产处置
-- **损失**：多重严重负面记录、信贷资产无法收回
-
-## 格式要求
-- 第一部分不添加任何额外说明文字
-- 第二部分语言专业、逻辑清晰、建议具体可行
-- 每个判断都要有数据支撑
-
-请分析以下征信报告内容："""
+# 查询原因需要统计的类型
+QUERY_REASONS_TO_COUNT = ["贷款审批", "信用卡审批", "保前审查", "担保资格审查", "法人代表、负责人、高管等资信审查"]
+# 排除的类型
+EXCLUDED_QUERY_REASONS = ["贷后管理"]
 
 
-def parse_pdf_with_parsex(pdf_bytes: bytes, filename: str) -> str:
-    """使用 ParseX API 解析 PDF"""
+# ========== 1. TextIn 解析 ==========
+def parse_pdf_with_textin(pdf_bytes: bytes) -> str:
+    """使用旧版 TextIn API 解析 PDF，返回 markdown 文本"""
     headers = {
-        "x-ti-app-id": PARSEX_APP_ID,
-        "x-ti-secret-code": PARSEX_SECRET
+        "x-ti-app-id": TEXTIN_APP_ID,
+        "x-ti-secret-code": TEXTIN_SECRET_CODE,
+        "Content-Type": "application/octet-stream"
     }
     
-    files = {
-        "file": (filename, pdf_bytes, "application/pdf")
+    params = {
+        "dpi": 144,
+        "get_image": "objects",
+        "markdown_details": 1,
+        "page_count": 100,
+        "parse_mode": "scan",
+        "table_flavor": "html"
     }
     
-    try:
-        response = requests.post(PARSEX_API_URL, headers=headers, files=files, timeout=60)
-        if response.status_code != 200:
-            raise Exception(f"ParseX 返回错误: {response.status_code} - {response.text[:200]}")
+    response = requests.post(
+        TEXTIN_API_URL,
+        params=params,
+        headers=headers,
+        data=pdf_bytes,
+        timeout=60
+    )
+    
+    if response.status_code != 200:
+        raise Exception(f"TextIn API HTTP错误: {response.status_code}")
+    
+    result = response.json()
+    if result.get("code") != 200:
+        raise Exception(f"TextIn 业务错误: {result.get('message', '未知错误')}")
+    
+    markdown = result.get("result", {}).get("markdown", "")
+    if not markdown:
+        raise Exception("TextIn 未返回文本内容")
+    
+    return markdown
+
+
+# ========== 2. 基础信息提取 ==========
+def extract_gender(text: str) -> str:
+    """从身份证号第17位判断性别（奇数为男，偶数为女）"""
+    match = re.search(r'证件号码[：:]\s*(\d{17}[\dXx])', text)
+    if match:
+        id_num = match.group(1)
+        gender_code = int(id_num[16])
+        return "男" if gender_code % 2 == 1 else "女"
+    return "未知"
+
+
+def extract_age(text: str, report_date: datetime) -> int:
+    """提取出生日期并计算周岁年龄"""
+    # 匹配 1995年10月14日 格式
+    birth_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', text)
+    if birth_match:
+        birth_year = int(birth_match.group(1))
+        birth_month = int(birth_match.group(2))
+        birth_day = int(birth_match.group(3))
+        birth_date = datetime(birth_year, birth_month, birth_day)
+        age = report_date.year - birth_date.year
+        if (report_date.month, report_date.day) < (birth_date.month, birth_date.day):
+            age -= 1
+        return age
+    return 0
+
+
+def extract_marriage(text: str) -> str:
+    """提取婚姻状况"""
+    if "已婚" in text:
+        return "已婚"
+    elif "未婚" in text:
+        return "未婚"
+    return "未知"
+
+
+def extract_report_date(text: str) -> datetime:
+    """提取报告日期"""
+    # 匹配 报告时间：2023-03-01 20:00:26 或 报告时间：2023- 03- 01 20:00:26
+    match = re.search(r'报告时间[：:]\s*(\d{4})[-年]\s*(\d{1,2})[-月]\s*(\d{1,2})', text)
+    if match:
+        return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    return datetime.now()
+
+
+# ========== 3. 查询记录统计 ==========
+def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
+    """统计各时间段查询次数"""
+    queries = {
+        "30d": 0,
+        "31_90d": 0,
+        "91_180d": 0,
+        "181_360d": 0,
+        "micro_60d": 0,
+        "self_60d": 0
+    }
+    
+    # 匹配机构查询记录明细中的查询
+    # 格式：2023年02月24日 哈尔滨哈银消费金融有限责任公司 贷后管理
+    pattern = r'(\d{4})年(\d{1,2})月(\d{1,2})日\s+([^\d\n]+?)\s+(贷款审批|信用卡审批|贷后管理|保前审查|担保资格审查|法人代表、负责人、高管等资信审查|本人查询)'
+    matches = re.findall(pattern, text)
+    
+    for y, m, d, institution, reason in matches:
+        query_date = datetime(int(y), int(m), int(d))
+        diff_days = (report_date - query_date).days
         
-        data = response.json()
-        # 根据 ParseX 实际返回格式调整
-        extracted_text = data.get("text", "") or data.get("data", {}).get("text", "")
-        if not extracted_text:
-            # 尝试其他常见字段
-            extracted_text = data.get("content", "") or data.get("result", "") or str(data)
-        return extracted_text
-    except Exception as e:
-        raise Exception(f"ParseX 解析失败: {str(e)}")
+        # 本人查询单独统计
+        if "本人查询" in reason:
+            if diff_days <= 60:
+                queries["self_60d"] += 1
+            continue
+        
+        # 排除贷后管理
+        if reason in EXCLUDED_QUERY_REASONS:
+            continue
+        
+        # 只统计指定的查询原因
+        if reason not in QUERY_REASONS_TO_COUNT:
+            continue
+        
+        # 按天数分段
+        if diff_days <= 30:
+            queries["30d"] += 1
+            # 60天内小网贷：检查机构是否是小网贷
+            if diff_days <= 60 and is_micro_institution(institution):
+                queries["micro_60d"] += 1
+        elif 31 <= diff_days <= 90:
+            queries["31_90d"] += 1
+            if diff_days <= 60 and is_micro_institution(institution):
+                queries["micro_60d"] += 1
+        elif 91 <= diff_days <= 180:
+            queries["91_180d"] += 1
+        elif 181 <= diff_days <= 360:
+            queries["181_360d"] += 1
+    
+    return queries
 
 
-def call_deepseek(text: str) -> str:
-    """调用 DeepSeek API 进行分析"""
+# ========== 4. 小网贷判断 ==========
+def is_micro_institution(institution_name: str) -> bool:
+    """判断机构是否为小网贷：机构名包含关键词 或 不含'银行'二字"""
+    # 规则1：机构名包含关键词
+    for kw in MICRO_KEYWORDS:
+        if kw in institution_name:
+            return True
+    # 规则2：机构名不含"银行"二字
+    if "银行" not in institution_name:
+        return True
+    return False
+
+
+# ========== 5. 贷款信息统计 ==========
+def extract_loans(text: str) -> Dict[str, Any]:
+    """
+    统计贷款信息
+    规则：
+    - 贷款机构数：未结清且有余额的贷款账户数
+    - 授信类账户计入（含余额为0的未结清授信账户）
+    - 房贷/车贷单独统计（从小网贷中剔除）
+    """
+    loans = {
+        "count": 0,           # 总机构数（未结清且有余额）
+        "balance": 0.0,       # 总余额（万元）
+        "housing_count": 0,   # 房贷笔数
+        "housing_balance": 0.0,
+        "car_count": 0,       # 车贷笔数
+        "car_balance": 0.0,
+        "micro_count": 0,     # 小网贷机构数（含余额为0的授信账户）
+        "micro_balance": 0.0,
+        "overdue_count": 0    # 贷款当前逾期账户数
+    }
+    
+    # 匹配贷款明细（发放类）
+    # 格式：1. 2018年11月06日 中国工商银行... 余额429,167
+    loan_pattern = r'(\d+)\.\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s+([^发]+)发放的[\d,]+\S+\s+.*?余额([\d,]+)'
+    matches = re.findall(loan_pattern, text, re.DOTALL)
+    
+    for match in matches:
+        balance_str = match[5].replace(',', '')
+        try:
+            balance = float(balance_str)
+        except:
+            continue
+        
+        institution = match[4]
+        desc = match[4]
+        
+        # 检查是否结清（余额为0且描述包含"已结清"）
+        is_settled = (balance == 0 and "已结清" in desc)
+        
+        # 只统计未结清且有余额的账户（余额>0）
+        if balance > 0:
+            loans["count"] += 1
+            loans["balance"] += balance / 10000  # 转换为万元
+        
+        # 判断类型（房贷/车贷优先于小网贷）
+        is_housing = any(kw in desc for kw in HOUSING_KEYWORDS)
+        is_car = any(kw in desc for kw in CAR_KEYWORDS)
+        is_micro = is_micro_institution(institution) and not is_housing and not is_car
+        
+        if is_housing:
+            loans["housing_count"] += 1
+            loans["housing_balance"] += balance / 10000
+        elif is_car:
+            loans["car_count"] += 1
+            loans["car_balance"] += balance / 10000
+        elif is_micro:
+            loans["micro_count"] += 1
+            loans["micro_balance"] += balance / 10000
+        
+        # 检查当前逾期
+        if "当前有逾期" in desc:
+            loans["overdue_count"] += 1
+    
+    # 匹配授信类账户（为...授信，可循环使用）
+    # 格式：11. 2021年03月15日 重庆美团三快小额贷款有限公司为其他个人消费贷款授信...余额为5,091
+    credit_pattern = r'(\d+)\.\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s+([^为]+)为[^，]+授信.*?余额为([\d,]+)'
+    credit_matches = re.findall(credit_pattern, text, re.DOTALL)
+    
+    for match in credit_matches:
+        balance_str = match[5].replace(',', '')
+        try:
+            balance = float(balance_str)
+        except:
+            continue
+        
+        institution = match[4]
+        desc = match[4]
+        
+        # 授信类账户计入机构数（余额=0也计入）
+        loans["count"] += 1
+        loans["balance"] += balance / 10000
+        
+        # 判断类型
+        is_housing = any(kw in desc for kw in HOUSING_KEYWORDS)
+        is_car = any(kw in desc for kw in CAR_KEYWORDS)
+        is_micro = is_micro_institution(institution) and not is_housing and not is_car
+        
+        if is_housing:
+            loans["housing_count"] += 1
+            loans["housing_balance"] += balance / 10000
+        elif is_car:
+            loans["car_count"] += 1
+            loans["car_balance"] += balance / 10000
+        elif is_micro:
+            loans["micro_count"] += 1
+            loans["micro_balance"] += balance / 10000
+        
+        if "当前有逾期" in desc:
+            loans["overdue_count"] += 1
+    
+    return loans
+
+
+# ========== 6. 信用卡信息统计 ==========
+def extract_credits(text: str) -> Dict[str, Any]:
+    """
+    统计信用卡信息
+    规则：未销户、人民币账户、信用额度>0
+    """
+    credits = {
+        "count": 0,           # 机构数
+        "limit": 0.0,         # 总授信额（万元）
+        "used": 0.0,          # 已用额度（万元）
+        "overdue": 0,         # 当前逾期账户数
+        "abnormal": {         # 非正常统计
+            "stop_payment": 0,
+            "frozen": 0,
+            "doubtful": 0
+        }
+    }
+    
+    # 匹配贷记卡账户（排除美元账户）
+    # 格式：1. 2019年07月23日 广发银行...贷记卡（人民币账户...）信用额度30,000，已使用额度30,401
+    card_pattern = r'(\d+)\.\s*(\d{4})年\d{1,2}月\d{1,2}日\s+([^发]+)发放的贷记卡[^）]*[（(]人民币账户[）)]'
+    matches = re.findall(card_pattern, text, re.DOTALL)
+    
+    # 在匹配到的账户附近找额度和余额
+    for match in matches:
+        institution = match[2]
+        # 找到这个账户的完整段落
+        account_text = match[0] + match[1] + institution
+        
+        # 提取信用额度
+        limit_match = re.search(r'信用额度([\d,]+)', account_text)
+        if not limit_match:
+            continue
+        limit = float(limit_match.group(1).replace(',', ''))
+        
+        # 提取已使用额度
+        used_match = re.search(r'已使用额度([\d,]+)', account_text)
+        if not used_match:
+            used_match = re.search(r'余额([\d,]+)', account_text)
+        used = float(used_match.group(1).replace(',', '')) if used_match else 0
+        
+        # 只统计额度>0的账户
+        if limit > 0:
+            credits["count"] += 1
+            credits["limit"] += limit / 10000
+            credits["used"] += used / 10000
+        
+        # 检查当前逾期
+        if "当前有逾期" in account_text:
+            credits["overdue"] += 1
+        
+        # 检查非正常状态
+        if "止付" in account_text:
+            credits["abnormal"]["stop_payment"] += 1
+        if "冻结" in account_text:
+            credits["abnormal"]["frozen"] += 1
+        if "呆账" in account_text:
+            credits["abnormal"]["doubtful"] += 1
+    
+    # 计算使用率
+    credits["usage_rate"] = round((credits["used"] / credits["limit"] * 100)) if credits["limit"] > 0 else 0
+    
+    # 格式化非正常输出
+    abnormal_parts = []
+    if credits["abnormal"]["stop_payment"] > 0:
+        abnormal_parts.append(f"止付{credits['abnormal']['stop_payment']}个")
+    if credits["abnormal"]["frozen"] > 0:
+        abnormal_parts.append(f"冻结{credits['abnormal']['frozen']}个")
+    if credits["abnormal"]["doubtful"] > 0:
+        abnormal_parts.append(f"呆账{credits['abnormal']['doubtful']}个")
+    credits["abnormal_display"] = "；".join(abnormal_parts) if abnormal_parts else ""
+    
+    return credits
+
+
+# ========== 7. 逾期信息统计 ==========
+def extract_overdue(text: str) -> Dict[str, int]:
+    """统计逾期信息"""
+    overdue = {
+        "total_months": 0,
+        "90d_count": 0
+    }
+    
+    # 匹配逾期月数：最近5年内有X个月处于逾期状态
+    month_pattern = r'最近5年内有(\d+)个月处于逾期状态'
+    months = re.findall(month_pattern, text)
+    overdue["total_months"] = sum(int(m) for m in months)
+    
+    # 匹配90天以上逾期
+    overdue_90_pattern = r'发生过90天以上逾期'
+    overdue["90d_count"] = len(re.findall(overdue_90_pattern, text))
+    
+    return overdue
+
+
+# ========== 8. 担保信息统计 ==========
+def extract_guarantee(text: str) -> Tuple[int, float]:
+    """
+    统计担保信息
+    只统计"为个人"和"为企业"的相关还款责任
+    担保余额取"相关还款责任金额"
+    """
+    count = 0
+    balance = 0.0
+    
+    # 匹配相关还款责任信息中的条目
+    # 格式：1.2025年04月01日，为江西比特烯新材料有限公司...相关还款责任金额1,170,000
+    pattern = r'(\d+)\.\s*(\d{4})年\d{1,2}月\d{1,2}日，为(个人|企业|[\u4e00-\u9fa5]+公司)[，\s]+.*?相关还款责任金额([\d,]+)'
+    matches = re.findall(pattern, text)
+    
+    for match in matches:
+        # 检查是否为个人或企业（包含"公司"或明确"为个人"）
+        target = match[2]
+        if "公司" in target or "个人" in target:
+            count += 1
+            amount_str = match[3].replace(',', '')
+            try:
+                balance += float(amount_str) / 10000
+            except:
+                pass
+    
+    return count, balance
+
+
+# ========== 9. 公共记录统计 ==========
+def extract_public_records(text: str) -> str:
+    """
+    统计公共记录（欠税、民事判决、强制执行、行政处罚）
+    输出格式：每类一行，包含数量和金额
+    """
+    records = []
+    
+    # 欠税记录
+    tax_pattern = r'欠税记录.*?欠税总额：([\d,]+)'
+    tax_match = re.search(tax_pattern, text, re.DOTALL)
+    if tax_match:
+        amount = float(tax_match.group(1).replace(',', ''))
+        records.append(f"欠税1条，金额{amount/10000:.2f}万元")
+    
+    # 民事判决记录
+    judgment_pattern = r'民事判决记录.*?诉讼标的金额：([\d,]+)'
+    judgments = re.findall(judgment_pattern, text, re.DOTALL)
+    if judgments:
+        total = sum(float(j.replace(',', '')) for j in judgments)
+        records.append(f"民事判决{len(judgments)}件，金额{total/10000:.2f}万元")
+    
+    # 强制执行记录
+    enforcement_pattern = r'强制执行记录.*?申请执行标的金额：([\d,]+)'
+    enforcements = re.findall(enforcement_pattern, text, re.DOTALL)
+    if enforcements:
+        total = sum(float(e.replace(',', '')) for e in enforcements)
+        records.append(f"强制执行{len(enforcements)}件，金额{total/10000:.2f}万元")
+    
+    # 行政处罚记录
+    penalty_pattern = r'行政处罚记录.*?处罚金额：([\d,]+)'
+    penalty_match = re.search(penalty_pattern, text, re.DOTALL)
+    if penalty_match:
+        amount = float(penalty_match.group(1).replace(',', ''))
+        records.append(f"行政处罚1条，金额{amount/10000:.2f}万元")
+    
+    return "\n".join(records) if records else "无"
+
+
+# ========== 10. 风险预警汇总 ==========
+def build_risk_warning(loans: Dict, credits: Dict, public_records: str) -> str:
+    """汇总风险预警信息"""
+    warnings = []
+    
+    # 贷款当逾
+    if loans.get("overdue_count", 0) > 0:
+        warnings.append(f"贷款当逾{loans['overdue_count']}个")
+    
+    # 信用卡当逾
+    if credits.get("overdue", 0) > 0:
+        warnings.append(f"信用卡当逾{credits['overdue']}个")
+    
+    # 信用卡非正常
+    if credits.get("abnormal_display"):
+        warnings.append(credits["abnormal_display"])
+    
+    # 公共记录（非"无"）
+    if public_records != "无":
+        warnings.append(public_records.replace("\n", "；"))
+    
+    return "；".join(warnings) if warnings else "无"
+
+
+# ========== 11. 构建大模型分析提示词 ==========
+def build_llm_prompt(stats: Dict[str, Any]) -> str:
+    """根据统计数据构建大模型分析提示词"""
+    q = stats["queries"]
+    l = stats["loans"]
+    c = stats["credits"]
+    o = stats["overdue"]
+    
+    return f"""你是一名资深的助贷风控专家。
+
+请基于以下【真实统计数据】，生成一份专业的征信分析报告（仅需第二部分：展开分析），不要重复第一部分的数字。
+
+### 基础信息
+- 性别：{stats['gender']}，年龄：{stats['age']}，婚姻：{stats['marriage']}
+
+### 查询记录分析数据
+- 30天内：{q['30d']}次
+- 31-90天：{q['31_90d']}次
+- 91-180天：{q['91_180d']}次
+- 181-360天：{q['181_360d']}次
+- 60天内小网贷查询：{q['micro_60d']}次
+- 60天内本人查询：{q['self_60d']}次
+
+### 贷款数据分析
+- 总机构数：{l['count']}家
+- 总余额：{round(l['balance'], 2)}万元
+- 房贷：{l['housing_count']}笔，余额：{round(l['housing_balance'], 2)}万元
+- 车贷：{l['car_count']}笔，余额：{round(l['car_balance'], 2)}万元
+- 小网贷：{l['micro_count']}家，余额：{round(l['micro_balance'], 2)}万元
+- 当前逾期：{l['overdue_count']}个
+
+### 信用卡数据分析
+- 机构数：{c['count']}家
+- 授信额：{round(c['limit'], 2)}万元
+- 已用额度：{round(c['used'], 2)}万元
+- 使用率：{c['usage_rate']}%
+- 当前逾期：{c['overdue']}个
+
+### 逾期记录
+- 总逾期月数：{o['total_months']}个月
+- 90天以上账户：{o['90d_count']}个
+
+请按以下结构输出：
+1. 基本信息解读
+2. 查询记录分析（评估资金紧张程度）
+3. 逾期记录分析
+4. 贷款信息分析（负债结构、小网贷依赖度）
+5. 信用卡信息分析（融资能力判断）
+6. 综合评估与风控建议（风险等级：正常/关注/次级/可疑/损失）
+
+要求：语言专业、逻辑清晰、每个判断都要有数据支撑。"""
+
+
+# ========== 12. 调用 DeepSeek ==========
+def call_deepseek(prompt: str) -> str:
+    """调用 DeepSeek API 生成分析报告"""
     payload = {
         "model": "deepseek-chat",
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": text[:15000]}  # 截断避免超长
-        ],
-        "temperature": 0,
-        "stream": False
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.5
     }
-    
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
         "Content-Type": "application/json"
     }
-    
     response = requests.post(DEEPSEEK_API_URL, json=payload, headers=headers, timeout=120)
+    
     if response.status_code != 200:
-        raise Exception(f"DeepSeek API 失败: {response.text[:500]}")
+        raise Exception(f"DeepSeek API 错误: {response.status_code} - {response.text[:200]}")
     
     data = response.json()
     return data["choices"][0]["message"]["content"]
 
 
+# ========== 13. API 接口 ==========
 @app.post("/api/analyze")
-async def analyze_credit_report(file: UploadFile = File(...)):
-    # 1. 验证 API Keys
+async def analyze(file: UploadFile):
     if not DEEPSEEK_API_KEY:
-        raise HTTPException(status_code=500, detail="DeepSeek API Key 未配置，请在 Railway 环境变量中添加 DEEPSEEK_API_KEY")
+        raise HTTPException(500, "缺少 DeepSeek API Key")
     
-    # 2. 读取上传的 PDF 文件
+    pdf_bytes = await file.read()
+    if len(pdf_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(400, "文件不能超过10MB")
+    
     try:
-        pdf_bytes = await file.read()
-        if len(pdf_bytes) > 10 * 1024 * 1024:  # 限制 10MB
-            raise HTTPException(status_code=400, detail="文件大小超过 10MB")
+        # 1. 使用 TextIn 解析 PDF
+        markdown_text = parse_pdf_with_textin(pdf_bytes)
+        
+        # 2. 提取报告日期
+        report_date = extract_report_date(markdown_text)
+        
+        # 3. 提取各项统计数据
+        gender = extract_gender(markdown_text)
+        age = extract_age(markdown_text, report_date)
+        marriage = extract_marriage(markdown_text)
+        
+        queries = extract_queries(markdown_text, report_date)
+        loans = extract_loans(markdown_text)
+        credits = extract_credits(markdown_text)
+        overdue = extract_overdue(markdown_text)
+        guarantee_count, guarantee_balance = extract_guarantee(markdown_text)
+        public_records = extract_public_records(markdown_text)
+        risk_warning = build_risk_warning(loans, credits, public_records)
+        
+        # 4. 构建统计数据字典
+        stats = {
+            "gender": gender,
+            "age": age,
+            "marriage": marriage,
+            "queries": queries,
+            "loans": loans,
+            "credits": credits,
+            "overdue": overdue
+        }
+        
+        # 5. 生成第一部分（简要汇总）
+        part1 = f"""### 第一部分：简要汇总
+
+*基本信息
+性别：{gender}
+年龄：{age}
+婚姻：{marriage}
+风险预警：{risk_warning}
+
+*查询记录
+30天内：{queries['30d']}
+31-90天：{queries['31_90d']}
+90-180天：{queries['91_180d']}
+180-360天：{queries['181_360d']}
+60天内小网贷：{queries['micro_60d']}
+60天内本人：{queries['self_60d']}
+
+*5年内逾期
+总月数：{overdue['total_months']}
+90天以上的账户数：{overdue['90d_count']}
+
+*贷款
+机构数：{loans['count']}
+总余额：{round(loans['balance'], 2)}万元
+房贷数：{loans['housing_count']}
+房贷余额：{round(loans['housing_balance'], 2)}万元
+车贷数：{loans['car_count']}
+车贷余额：{round(loans['car_balance'], 2)}万元
+小网贷的机构数：{loans['micro_count']}
+小网贷的余额：{round(loans['micro_balance'], 2)}万元
+
+*信用卡
+机构数：{credits['count']}
+授信额：{round(credits['limit'], 2)}万元
+已用额度：{round(credits['used'], 2)}万元
+使用率：{credits['usage_rate']}%
+
+*担保信息
+担保户数：{guarantee_count}
+担保余额：{round(guarantee_balance, 2)}万元
+
+*公共记录
+{public_records}"""
+        
+        # 6. 生成第二部分（大模型分析）
+        llm_prompt = build_llm_prompt(stats)
+        part2 = call_deepseek(llm_prompt)
+        
+        full_report = part1 + "\n\n### 第二部分：展开分析\n\n" + part2
+        return JSONResponse({"success": True, "full_report": full_report})
+        
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"读取文件失败: {str(e)}")
-    
-    # 3. 调用 ParseX 解析 PDF
-    try:
-        extracted_text = parse_pdf_with_parsex(pdf_bytes, file.filename)
-        if not extracted_text or len(extracted_text) < 50:
-            raise Exception("ParseX 未返回有效文本内容")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"PDF 解析失败: {str(e)}")
-    
-    # 4. 调用 DeepSeek 大模型
-    try:
-        analysis_result = call_deepseek(extracted_text)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"大模型分析失败: {str(e)}")
-    
-    return JSONResponse(content={
-        "success": True,
-        "full_report": analysis_result
-    })
+        raise HTTPException(500, f"处理失败: {str(e)}")
 
 
 @app.get("/api/health")
-async def health_check():
-    return {"status": "ok", "parsex_configured": bool(PARSEX_APP_ID and PARSEX_SECRET)}
+def health():
+    return {"status": "ok", "version": "v3_programmatic", "parser": "textin_old"}
 
 
-# 提供前端页面
 @app.get("/")
-async def serve_frontend():
-    html_content = """
-    <!DOCTYPE html>
-    <html lang="zh-CN">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>个人征信报告AI分析系统</title>
-        <style>
-            body {
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                max-width: 1200px;
-                margin: 40px auto;
-                padding: 20px;
-                background: #f5f7fa;
-            }
-            .container {
-                background: white;
-                border-radius: 16px;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-                padding: 30px;
-            }
-            h1 {
-                color: #1e3c72;
-                border-bottom: 2px solid #4a90e2;
-                padding-bottom: 10px;
-            }
-            .upload-area {
-                border: 2px dashed #4a90e2;
-                border-radius: 12px;
-                padding: 40px;
-                text-align: center;
-                background: #fafcff;
-                margin: 20px 0;
-                cursor: pointer;
-            }
-            .upload-area:hover {
-                background: #eef4ff;
-            }
-            input[type="file"] {
-                display: none;
-            }
-            button {
-                background: #4a90e2;
-                color: white;
-                border: none;
-                padding: 12px 28px;
-                border-radius: 40px;
-                font-size: 16px;
-                cursor: pointer;
-                transition: 0.2s;
-            }
-            button:hover {
-                background: #357abd;
-            }
-            button:disabled {
-                background: #b0c4de;
-                cursor: not-allowed;
-            }
-            .result {
-                margin-top: 30px;
-                background: #f9f9f9;
-                border-radius: 12px;
-                padding: 20px;
-                white-space: pre-wrap;
-                font-family: monospace;
-                font-size: 14px;
-                line-height: 1.5;
-                max-height: 600px;
-                overflow-y: auto;
-            }
-            .loading {
-                display: none;
-                text-align: center;
-                margin: 20px;
-                color: #4a90e2;
-            }
-            .error {
-                color: #d32f2f;
-                background: #ffebee;
-                padding: 12px;
-                border-radius: 8px;
-                margin: 20px 0;
-            }
-            .tab-buttons {
-                display: flex;
-                gap: 10px;
-                margin-bottom: 15px;
-            }
-            .tab-btn {
-                background: #e0e7ff;
-                color: #1e3c72;
-                padding: 8px 16px;
-                border: none;
-                border-radius: 8px;
-                cursor: pointer;
-            }
-            .tab-btn.active {
-                background: #4a90e2;
-                color: white;
-            }
-        </style>
-    </head>
-    <body>
-    <div class="container">
-        <h1>📄 个人征信报告AI分析系统</h1>
-        <p>上传PDF格式的个人信用报告，系统将自动解析并生成专业风控报告。</p>
-    
-        <div class="upload-area" id="uploadArea">
-            <p>📎 点击或拖拽上传PDF文件</p>
-            <input type="file" id="fileInput" accept=".pdf">
-        </div>
-    
-        <div style="text-align: center;">
-            <button id="analyzeBtn" disabled>开始分析</button>
-        </div>
-    
-        <div class="loading" id="loading">
-            ⏳ 正在解析并分析报告，请稍候...（可能需要30-60秒）
-        </div>
-    
-        <div id="resultContainer" style="display: none;">
-            <div class="tab-buttons">
-                <button class="tab-btn active" data-tab="summary">📋 简要汇总</button>
-                <button class="tab-btn" data-tab="detail">🔍 展开分析</button>
-            </div>
-            <div class="result" id="summaryResult"></div>
-            <div class="result" id="detailResult" style="display: none;"></div>
-        </div>
-    </div>
-    
-    <script>
-        let selectedFile = null;
-        const fileInput = document.getElementById('fileInput');
-        const uploadArea = document.getElementById('uploadArea');
-        const analyzeBtn = document.getElementById('analyzeBtn');
-        const loadingDiv = document.getElementById('loading');
-        const resultContainer = document.getElementById('resultContainer');
-        const summaryDiv = document.getElementById('summaryResult');
-        const detailDiv = document.getElementById('detailResult');
-    
-        uploadArea.addEventListener('click', () => fileInput.click());
-        uploadArea.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            uploadArea.style.background = '#eef4ff';
-        });
-        uploadArea.addEventListener('dragleave', () => {
-            uploadArea.style.background = '#fafcff';
-        });
-        uploadArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            uploadArea.style.background = '#fafcff';
-            const files = e.dataTransfer.files;
-            if (files.length > 0) handleFile(files[0]);
-        });
-    
-        fileInput.addEventListener('change', (e) => {
-            if (e.target.files.length > 0) handleFile(e.target.files[0]);
-        });
-    
-        function handleFile(file) {
-            if (file.type !== 'application/pdf') {
-                alert('请上传PDF格式的文件');
-                return;
-            }
-            selectedFile = file;
-            analyzeBtn.disabled = false;
-            uploadArea.style.borderColor = '#2ecc71';
-            uploadArea.querySelector('p').innerHTML = `✅ 已选择：${file.name}`;
-        }
-    
-        analyzeBtn.addEventListener('click', async () => {
-            if (!selectedFile) return;
-    
-            analyzeBtn.disabled = true;
-            loadingDiv.style.display = 'block';
-            resultContainer.style.display = 'none';
-    
-            const formData = new FormData();
-            formData.append('file', selectedFile);
-    
-            try {
-                const response = await fetch('/api/analyze', {
-                    method: 'POST',
-                    body: formData
-                });
-    
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.detail || '分析失败');
-    
-                const full = data.full_report;
-                let summary = full;
-                let detail = full;
-                if (full.includes('### 第一部分') && full.includes('### 第二部分')) {
-                    const parts = full.split('### 第二部分');
-                    summary = parts[0].replace('### 第一部分', '').trim();
-                    detail = '### 第二部分' + (parts[1] || '').trim();
-                }
-                summaryDiv.innerText = summary;
-                detailDiv.innerText = detail;
-    
-                resultContainer.style.display = 'block';
-                document.querySelector('[data-tab="summary"]').click();
-    
-            } catch (err) {
-                alert('错误：' + err.message);
-            } finally {
-                loadingDiv.style.display = 'none';
-                analyzeBtn.disabled = false;
-            }
-        });
-    
-        document.querySelectorAll('.tab-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                const tab = btn.getAttribute('data-tab');
-                if (tab === 'summary') {
-                    summaryDiv.style.display = 'block';
-                    detailDiv.style.display = 'none';
-                } else {
-                    summaryDiv.style.display = 'none';
-                    detailDiv.style.display = 'block';
-                }
-            });
-        });
-    </script>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html_content)
+def frontend():
+    html = '''<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>征信报告分析系统</title>
+<style>
+body {font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #f5f7fa;}
+.container {background: white; border-radius: 16px; padding: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);}
+h1 {color: #1e3c72; border-bottom: 2px solid #4a90e2; padding-bottom: 10px;}
+.upload-area {border: 2px dashed #4a90e2; border-radius: 12px; padding: 40px; text-align: center; background: #fafcff; margin: 20px 0; cursor: pointer;}
+.upload-area:hover {background: #eef4ff;}
+input[type="file"] {display: none;}
+button {background: #4a90e2; color: white; border: none; padding: 12px 28px; border-radius: 40px; font-size: 16px; cursor: pointer;}
+button:hover {background: #357abd;}
+.result {background: #f9f9f9; border-radius: 12px; padding: 20px; margin-top: 20px; white-space: pre-wrap; font-family: monospace; font-size: 14px; line-height: 1.5; max-height: 600px; overflow-y: auto;}
+.loading {display: none; text-align: center; margin: 20px; color: #4a90e2;}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>📄 个人征信报告AI分析系统</h1>
+<p>上传PDF格式的个人信用报告，系统将自动解析并生成专业风控报告。</p>
+<div class="upload-area" onclick="document.getElementById('file').click()">
+<p>📎 点击或拖拽上传PDF文件</p>
+<input type="file" id="file" accept=".pdf">
+</div>
+<div style="text-align: center;"><button id="analyzeBtn" disabled>开始分析</button></div>
+<div class="loading" id="loading">⏳ 正在解析并分析报告，请稍候...（可能需要30-60秒）</div>
+<div id="resultContainer" style="display: none;">
+<div class="result" id="result"></div>
+</div>
+</div>
+<script>
+let selectedFile = null;
+const fileInput = document.getElementById('file');
+const uploadArea = document.querySelector('.upload-area');
+const analyzeBtn = document.getElementById('analyzeBtn');
+const loadingDiv = document.getElementById('loading');
+const resultDiv = document.getElementById('result');
+const resultContainer = document.getElementById('resultContainer');
+
+uploadArea.addEventListener('click', () => fileInput.click());
+uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.style.background = '#eef4ff'; });
+uploadArea.addEventListener('dragleave', () => { uploadArea.style.background = '#fafcff'; });
+uploadArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    uploadArea.style.background = '#fafcff';
+    if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
+});
+
+fileInput.addEventListener('change', (e) => { if (e.target.files.length > 0) handleFile(e.target.files[0]); });
+
+function handleFile(file) {
+    if (file.type !== 'application/pdf') { alert('请上传PDF格式的文件'); return; }
+    selectedFile = file;
+    analyzeBtn.disabled = false;
+    uploadArea.querySelector('p').innerHTML = `✅ 已选择：${file.name}`;
+}
+
+analyzeBtn.addEventListener('click', async () => {
+    if (!selectedFile) return;
+    analyzeBtn.disabled = true;
+    loadingDiv.style.display = 'block';
+    resultContainer.style.display = 'none';
+    const formData = new FormData();
+    formData.append('file', selectedFile);
+    try {
+        const response = await fetch('/api/analyze', { method: 'POST', body: formData });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '分析失败');
+        resultDiv.innerText = data.full_report;
+        resultContainer.style.display = 'block';
+    } catch (err) {
+        alert('错误：' + err.message);
+    } finally {
+        loadingDiv.style.display = 'none';
+        analyzeBtn.disabled = false;
+    }
+});
+</script>
+</body>
+</html>'''
+    return HTMLResponse(content=html)
 
 
 if __name__ == "__main__":
