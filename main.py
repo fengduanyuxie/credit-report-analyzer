@@ -161,8 +161,9 @@ def extract_loans(text: str) -> Dict[str, Any]:
         "overdue_count": 0
     }
     
-    # 匹配发放类贷款（适配 TextIn 格式：余额xxx。）
-    loan_pattern = r'(\d+)\.\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s+([^0-9\n]+?)发放的[\d,]+\S+\s+.*?余额([\d,，]+)[。\s]'
+    # 匹配发放类贷款（适配 TextIn 格式：余额429,167。）
+    # 匹配从数字序号开始，到余额数字结束（可能以句号或换行结束）
+    loan_pattern = r'(\d+)\.\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s+([^0-9\n]+?)发放的[\d,]+元[^，]*?，?.*?余额([\d,]+)[。\s\n]'
     matches = re.findall(loan_pattern, text, re.DOTALL)
     
     for match in matches:
@@ -191,8 +192,8 @@ def extract_loans(text: str) -> Dict[str, Any]:
         if "当前有逾期" in desc:
             loans["overdue_count"] += 1
     
-    # 匹配授信类账户（格式：...为其他个人消费贷款授信...余额为xxx）
-    credit_pattern = r'(\d+)\.\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s+([^0-9\n]+?)为[^，]+?授信.*?余额为([\d,，]+)'
+    # 匹配授信类账户
+    credit_pattern = r'(\d+)\.\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s+([^0-9\n]+?)为[^，]+?授信.*?余额为([\d,]+)'
     credit_matches = re.findall(credit_pattern, text, re.DOTALL)
     
     for match in credit_matches:
@@ -409,9 +410,6 @@ async def analyze(file: UploadFile):
     
     try:
         markdown_text = parse_pdf_with_textin(pdf_bytes)
-        print("=== TextIn 解析结果（前2000字符）===")
-        print(markdown_text[:2000])
-        print("===================================")
         
         report_date = extract_report_date(markdown_text)
         gender = extract_gender(markdown_text)
@@ -485,7 +483,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v3_fixed_regex"}
+    return {"status": "ok", "version": "v3_final"}
 
 
 @app.get("/")
