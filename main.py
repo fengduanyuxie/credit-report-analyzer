@@ -85,16 +85,21 @@ def extract_gender(text: str) -> str:
 
 
 def extract_age(text: str, report_date: datetime) -> int:
-    birth_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', text)
-    if birth_match:
-        birth_year = int(birth_match.group(1))
-        birth_month = int(birth_match.group(2))
-        birth_day = int(birth_match.group(3))
-        birth_date = datetime(birth_year, birth_month, birth_day)
-        age = report_date.year - birth_date.year
-        if (report_date.month, report_date.day) < (birth_date.month, birth_date.day):
-            age -= 1
-        return age
+    """从身份证号提取年龄"""
+    id_match = re.search(r'证件号码[：:]\s*(\d{17}[\dXx])', text)
+    if id_match:
+        id_num = id_match.group(1)
+        try:
+            birth_year = int(id_num[6:10])
+            birth_month = int(id_num[10:12])
+            birth_day = int(id_num[12:14])
+            birth_date = datetime(birth_year, birth_month, birth_day)
+            age = report_date.year - birth_date.year
+            if (report_date.month, report_date.day) < (birth_date.month, birth_date.day):
+                age -= 1
+            return age
+        except:
+            pass
     return 0
 
 
@@ -107,6 +112,7 @@ def extract_marriage(text: str) -> str:
 
 
 def extract_report_date(text: str) -> datetime:
+    """提取报告日期"""
     match = re.search(r'报告时间[：:]\s*(\d{4})[-年]\s*(\d{1,2})[-月]\s*(\d{1,2})', text)
     if match:
         return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
@@ -123,20 +129,26 @@ def is_micro_institution(institution_name: str) -> bool:
 
 
 def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
+    """统计查询记录"""
     queries = {"30d": 0, "31_90d": 0, "91_180d": 0, "181_360d": 0, "micro_60d": 0, "self_60d": 0}
-    pattern = r'(\d{4})年(\d{1,2})月(\d{1,2})日\s+([^\d\n]+?)\s+(贷款审批|信用卡审批|贷后管理|保前审查|担保资格审查|法人代表、负责人、高管等资信审查|本人查询)'
-    matches = re.findall(pattern, text)
-    for y, m, d, institution, reason in matches:
-        query_date = datetime(int(y), int(m), int(d))
-        diff_days = (report_date - query_date).days
-        if "本人查询" in reason:
-            if diff_days <= 60:
-                queries["self_60d"] += 1
+    
+    # 匹配机构查询记录（支持表格格式和文本格式）
+    # 表格格式：| 1 | 2023 年 11 月 01 日 | 马上消费金融股份有限公司 | 贷款审批 |
+    pattern1 = r'\|\s*\d+\s*\|\s*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*\|\s*([^|\n]+?)\s*\|\s*([^|\n]+?)\s*\|'
+    matches1 = re.findall(pattern1, text)
+    
+    for y, m, d, institution, reason in matches1:
+        try:
+            query_date = datetime(int(y), int(m), int(d))
+        except:
             continue
+        diff_days = (report_date - query_date).days
+        
         if reason in EXCLUDED_QUERY_REASONS:
             continue
         if reason not in QUERY_REASONS_TO_COUNT:
             continue
+        
         if diff_days <= 30:
             queries["30d"] += 1
             if diff_days <= 60 and is_micro_institution(institution):
@@ -149,10 +161,24 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
             queries["91_180d"] += 1
         elif 181 <= diff_days <= 360:
             queries["181_360d"] += 1
+    
+    # 匹配本人查询
+    self_pattern = r'\|\s*\d+\s*\|\s*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*\|\s*本人\s*\|\s*本人查询'
+    self_matches = re.findall(self_pattern, text)
+    for y, m, d in self_matches:
+        try:
+            query_date = datetime(int(y), int(m), int(d))
+        except:
+            continue
+        diff_days = (report_date - query_date).days
+        if diff_days <= 60:
+            queries["self_60d"] += 1
+    
     return queries
 
 
 def extract_loans(text: str) -> Dict[str, Any]:
+    """统计贷款信息"""
     loans = {
         "count": 0, "balance": 0.0,
         "housing_count": 0, "housing_balance": 0.0,
@@ -163,30 +189,28 @@ def extract_loans(text: str) -> Dict[str, Any]:
     
     lines = text.split('\n')
     for line in lines:
-        # 匹配贷款行：以数字加点开头，包含"发放"和"余额"
+        # 跳过结清的账户
+        if "已结清" in line:
+            continue
+        
+        # 匹配发放类贷款
         if re.match(r'^\d+\.', line) and '发放' in line and '余额' in line:
-            # 提取余额（格式：余额429,167 或 余额429,167。）
+            # 提取余额
             balance_match = re.search(r'余额([\d,]+)', line)
             if not balance_match:
                 continue
             balance = clean_number(balance_match.group(1))
             
-            # 提取机构名（从日期后到"发放"之前）
+            # 提取机构名
             inst_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日([^发]+)发放', line)
-            if inst_match:
-                institution = inst_match.group(1).strip()
-            else:
-                institution = line
+            institution = inst_match.group(1).strip() if inst_match else line
             
-            desc = line
-            
-            # 只统计余额 > 0 的账户
             if balance > 0:
                 loans["count"] += 1
                 loans["balance"] += balance / 10000
             
-            is_housing = any(kw in desc for kw in HOUSING_KEYWORDS)
-            is_car = any(kw in desc for kw in CAR_KEYWORDS)
+            is_housing = any(kw in line for kw in HOUSING_KEYWORDS)
+            is_car = any(kw in line for kw in CAR_KEYWORDS)
             is_micro = is_micro_institution(institution) and not is_housing and not is_car
             
             if is_housing:
@@ -199,28 +223,21 @@ def extract_loans(text: str) -> Dict[str, Any]:
                 loans["micro_count"] += 1
                 loans["micro_balance"] += balance / 10000
         
-        # 匹配授信类账户（格式：余额为5,091）
+        # 匹配授信类账户
         elif re.match(r'^\d+\.', line) and '授信' in line and '余额为' in line:
             balance_match = re.search(r'余额为([\d,]+)', line)
             if not balance_match:
                 continue
             balance = clean_number(balance_match.group(1))
             
-            # 提取机构名
             inst_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日([^为]+)为', line)
-            if inst_match:
-                institution = inst_match.group(1).strip()
-            else:
-                institution = line
+            institution = inst_match.group(1).strip() if inst_match else line
             
-            desc = line
-            
-            # 授信类账户计入机构数（余额=0也计入）
             loans["count"] += 1
             loans["balance"] += balance / 10000
             
-            is_housing = any(kw in desc for kw in HOUSING_KEYWORDS)
-            is_car = any(kw in desc for kw in CAR_KEYWORDS)
+            is_housing = any(kw in line for kw in HOUSING_KEYWORDS)
+            is_car = any(kw in line for kw in CAR_KEYWORDS)
             is_micro = is_micro_institution(institution) and not is_housing and not is_car
             
             if is_housing:
@@ -241,6 +258,7 @@ def extract_loans(text: str) -> Dict[str, Any]:
 
 
 def extract_credits(text: str) -> Dict[str, Any]:
+    """统计信用卡信息"""
     credits = {
         "count": 0, "limit": 0.0, "used": 0.0, "overdue": 0,
         "abnormal": {"stop_payment": 0, "frozen": 0, "doubtful": 0}
@@ -248,13 +266,15 @@ def extract_credits(text: str) -> Dict[str, Any]:
     
     lines = text.split('\n')
     for line in lines:
-        if re.match(r'^\d+\.', line) and '贷记卡' in line and '人民币账户' in line:
+        # 匹配人民币贷记卡账户（排除美元账户）
+        if re.match(r'^\d+\.', line) and '贷记卡' in line and '人民币账户' in line and '美元' not in line:
             # 提取信用额度
             limit_match = re.search(r'信用额度([\d,]+)', line)
             if not limit_match:
                 continue
             limit = clean_number(limit_match.group(1))
             
+            # 提取已使用额度
             used_match = re.search(r'已使用额度([\d,]+)', line)
             if not used_match:
                 used_match = re.search(r'余额([\d,]+)', line)
@@ -421,9 +441,6 @@ async def analyze(file: UploadFile):
     
     try:
         markdown_text = parse_pdf_with_textin(pdf_bytes)
-        print("=== TextIn 完整解析结果（前5000字符）===")
-        print(markdown_text[:5000])
-        print("=========================================")
         
         report_date = extract_report_date(markdown_text)
         gender = extract_gender(markdown_text)
