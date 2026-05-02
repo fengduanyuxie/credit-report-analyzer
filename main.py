@@ -161,20 +161,17 @@ def extract_loans(text: str) -> Dict[str, Any]:
         "overdue_count": 0
     }
     
-    # 匹配发放类贷款 - 更简单直接的匹配方式
-    # 匹配格式：数字. 日期 机构名称发放的...余额数字
     lines = text.split('\n')
     for line in lines:
-        # 匹配贷款行：以数字加点开头，包含"发放"，包含"余额"
+        # 匹配贷款行：以数字加点开头，包含"发放"和"余额"
         if re.match(r'^\d+\.', line) and '发放' in line and '余额' in line:
-            # 提取余额
+            # 提取余额（格式：余额429,167 或 余额429,167。）
             balance_match = re.search(r'余额([\d,]+)', line)
             if not balance_match:
                 continue
             balance = clean_number(balance_match.group(1))
             
             # 提取机构名（从日期后到"发放"之前）
-            # 格式：1.2018年11月06日中国工商银行...发放的
             inst_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日([^发]+)发放', line)
             if inst_match:
                 institution = inst_match.group(1).strip()
@@ -183,6 +180,7 @@ def extract_loans(text: str) -> Dict[str, Any]:
             
             desc = line
             
+            # 只统计余额 > 0 的账户
             if balance > 0:
                 loans["count"] += 1
                 loans["balance"] += balance / 10000
@@ -200,18 +198,15 @@ def extract_loans(text: str) -> Dict[str, Any]:
             elif is_micro:
                 loans["micro_count"] += 1
                 loans["micro_balance"] += balance / 10000
-            
-            if "当前有逾期" in desc:
-                loans["overdue_count"] += 1
-    
-    # 匹配授信类账户
-    for line in lines:
-        if re.match(r'^\d+\.', line) and '授信' in line and '余额为' in line:
+        
+        # 匹配授信类账户（格式：余额为5,091）
+        elif re.match(r'^\d+\.', line) and '授信' in line and '余额为' in line:
             balance_match = re.search(r'余额为([\d,]+)', line)
             if not balance_match:
                 continue
             balance = clean_number(balance_match.group(1))
             
+            # 提取机构名
             inst_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日([^为]+)为', line)
             if inst_match:
                 institution = inst_match.group(1).strip()
@@ -220,6 +215,7 @@ def extract_loans(text: str) -> Dict[str, Any]:
             
             desc = line
             
+            # 授信类账户计入机构数（余额=0也计入）
             loans["count"] += 1
             loans["balance"] += balance / 10000
             
@@ -236,6 +232,10 @@ def extract_loans(text: str) -> Dict[str, Any]:
             elif is_micro:
                 loans["micro_count"] += 1
                 loans["micro_balance"] += balance / 10000
+        
+        # 匹配当前逾期
+        if "当前有逾期" in line:
+            loans["overdue_count"] += 1
     
     return loans
 
@@ -422,11 +422,6 @@ async def analyze(file: UploadFile):
     try:
         markdown_text = parse_pdf_with_textin(pdf_bytes)
         
-        # 调试打印：输出贷款相关部分
-        print("=== TextIn 解析结果（完整前3000字符）===")
-        print(markdown_text[:3000])
-        print("===================================")
-        
         report_date = extract_report_date(markdown_text)
         gender = extract_gender(markdown_text)
         age = extract_age(markdown_text, report_date)
@@ -499,7 +494,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v3_debug"}
+    return {"status": "ok", "version": "v3_final_fixed"}
 
 
 @app.get("/")
