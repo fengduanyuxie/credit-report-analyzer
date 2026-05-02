@@ -122,10 +122,10 @@ def is_micro_institution(institution_name: str) -> bool:
         return True
     return False
 
+
 def extract_asset_disposal(text: str) -> Tuple[int, float]:
     count = 0
     balance = 0.0
-    # 查找 ## 资产处置信息 下的余额
     asset_section = re.search(r'## 资产处置信息(.*?)(?=## |$)', text, re.DOTALL)
     if asset_section:
         balance_match = re.search(r'余额为([\d,]+)', asset_section.group(1))
@@ -146,6 +146,7 @@ def extract_advance_payment(text: str) -> Tuple[int, float]:
             amount = clean_number(amount_match.group(1)) / 10000
     return count, amount
 
+
 def extract_loans(text: str) -> Dict[str, Any]:
     loans = {
         "count": 0, "balance": 0.0,
@@ -155,53 +156,48 @@ def extract_loans(text: str) -> Dict[str, Any]:
         "overdue_count": 0
     }
     
-    # 查找贷款部分
     loan_section = re.search(r'## 贷款(.*?)(?=## |$)', text, re.DOTALL)
     if not loan_section:
+        print("未找到贷款部分")
         return loans
     
     loan_text = loan_section.group(1)
+    print(f"贷款部分长度: {len(loan_text)} 字符")
     
-    # 匹配所有以数字加点开头的行
     lines = loan_text.split('\n')
     for line in lines:
         line = line.strip()
         if not line or not re.match(r'^\d+\.', line):
             continue
         
-        # 跳过已结清或已转出的账户
         if "已结清" in line or "已转出" in line:
+            print(f"跳过已结清/转出: {line[:50]}")
             continue
         
-        # 提取余额
         balance_match = re.search(r'余额[为]?([\d,]+)', line)
         if not balance_match:
             continue
         balance = clean_number(balance_match.group(1))
         
-        # 提取机构名
-        inst_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日([^发发放授信]+?)(?:发放|为)', line)
+        inst_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日([^发放授信]+?)(?:发放|为)', line)
         if inst_match:
             institution = inst_match.group(1).strip()
         else:
             institution = line[:50]
         
-        # 统计所有未结清账户（余额>0 或 未结清的授信）
-        if balance > 0 or ("授信" in line and "余额为0" not in line):
+        if balance > 0:
             loans["count"] += 1
             loans["balance"] += balance / 10000
+            print(f"贷款: {institution[:30]}, 余额: {balance/10000:.2f}万")
         
-        # 判断房贷
         is_housing = any(kw in line for kw in HOUSING_KEYWORDS)
-        # 判断车贷
         is_car = any(kw in line for kw in CAR_KEYWORDS)
-        # 判断小网贷
         is_micro = is_micro_institution(institution) and not is_housing and not is_car
         
-        if is_housing:
+        if is_housing and balance > 0:
             loans["housing_count"] += 1
             loans["housing_balance"] += balance / 10000
-        elif is_car:
+        elif is_car and balance > 0:
             loans["car_count"] += 1
             loans["car_balance"] += balance / 10000
         elif is_micro and balance > 0:
@@ -211,7 +207,9 @@ def extract_loans(text: str) -> Dict[str, Any]:
         if "当前有逾期" in line:
             loans["overdue_count"] += 1
     
+    print(f"贷款统计结果: 机构数={loans['count']}, 总余额={loans['balance']:.2f}万")
     return loans
+
 
 def extract_credits(text: str) -> Dict[str, Any]:
     credits = {
@@ -219,12 +217,13 @@ def extract_credits(text: str) -> Dict[str, Any]:
         "abnormal": {"stop_payment": 0, "frozen": 0, "doubtful": 0}
     }
     
-    # 查找信用卡部分
     credit_section = re.search(r'## 信用卡(.*?)(?=## |$)', text, re.DOTALL)
     if not credit_section:
+        print("未找到信用卡部分")
         return credits
     
     credit_text = credit_section.group(1)
+    print(f"信用卡部分长度: {len(credit_text)} 字符")
     
     lines = credit_text.split('\n')
     for line in lines:
@@ -232,22 +231,19 @@ def extract_credits(text: str) -> Dict[str, Any]:
         if not line or not re.match(r'^\d+\.', line):
             continue
         
-        # 只统计人民币贷记卡，排除美元账户
         if '贷记卡' not in line or '人民币' not in line:
             continue
         if '美元' in line:
             continue
-        # 排除已销户
         if '销户' in line:
+            print(f"跳过已销户: {line[:50]}")
             continue
         
-        # 提取信用额度
         limit_match = re.search(r'信用额度([\d,]+)', line)
         if not limit_match:
             continue
         limit = clean_number(limit_match.group(1))
         
-        # 提取已使用额度
         used_match = re.search(r'已使用额度([\d,]+)', line)
         if not used_match:
             used_match = re.search(r'余额([\d,]+)', line)
@@ -257,6 +253,7 @@ def extract_credits(text: str) -> Dict[str, Any]:
             credits["count"] += 1
             credits["limit"] += limit / 10000
             credits["used"] += used / 10000
+            print(f"信用卡: 额度={limit/10000:.2f}万, 已用={used/10000:.2f}万")
         
         if "当前有逾期" in line:
             credits["overdue"] += 1
@@ -278,25 +275,26 @@ def extract_credits(text: str) -> Dict[str, Any]:
         abnormal_parts.append(f"呆账{credits['abnormal']['doubtful']}个")
     credits["abnormal_display"] = "；".join(abnormal_parts) if abnormal_parts else ""
     
+    print(f"信用卡统计结果: 机构数={credits['count']}, 总额度={credits['limit']:.2f}万")
     return credits
+
 
 def extract_overdue(text: str) -> Dict[str, int]:
     overdue = {"total_months": 0, "90d_count": 0}
     
-    # 提取所有逾期月数
     month_pattern = r'最近5年内有(\d+)个月处于逾期状态'
     months = re.findall(month_pattern, text)
     overdue["total_months"] = sum(int(m) for m in months)
     
-    # 提取90天以上逾期账户数
-    # 匹配 "其中X个月逾期超过90天" 中 X>0 的条数
     overdue_90_pattern = r'其中(\d+)个月逾期超过90天'
     matches = re.findall(overdue_90_pattern, text)
     for match in matches:
         if int(match) > 0:
             overdue["90d_count"] += 1
     
+    print(f"逾期统计: 总月数={overdue['total_months']}, 90天以上账户={overdue['90d_count']}")
     return overdue
+
 
 def extract_guarantee(text: str) -> Tuple[int, float]:
     count = 0
@@ -317,41 +315,41 @@ def extract_guarantee(text: str) -> Tuple[int, float]:
         if amount_match:
             balance += clean_number(amount_match.group(1)) / 10000
     
+    print(f"担保统计: 户数={count}, 余额={balance:.2f}万")
     return count, balance
+
 
 def extract_public_records(text: str) -> str:
     records = []
     
-    # 欠税
     tax_match = re.search(r'## 欠税记录.*?欠税总额：([\d,]+)', text, re.DOTALL)
     if tax_match:
         amount = clean_number(tax_match.group(1))
         records.append(f"欠税1条，金额{amount/10000:.2f}万元")
     
-    # 民事判决
-    judgment_matches = re.findall(r'民事判决记录.*?诉讼标的金额：([\d,]+)', text, re.DOTALL)
+    judgment_matches = re.findall(r'## 民事判决记录.*?诉讼标的金额：([\d,]+)', text, re.DOTALL)
     if judgment_matches:
         total = sum(clean_number(j) for j in judgment_matches)
         records.append(f"民事判决{len(judgment_matches)}件，金额{total/10000:.2f}万元")
     
-    # 强制执行
-    enforcement_matches = re.findall(r'强制执行记录.*?申请执行标的金额：([\d,]+)', text, re.DOTALL)
+    enforcement_matches = re.findall(r'## 强制执行记录.*?申请执行标的金额：([\d,]+)', text, re.DOTALL)
     if enforcement_matches:
         total = sum(clean_number(e) for e in enforcement_matches)
         records.append(f"强制执行{len(enforcement_matches)}件，金额{total/10000:.2f}万元")
     
-    # 行政处罚
-    penalty_match = re.search(r'行政处罚记录.*?处罚金额：([\d,]+)', text, re.DOTALL)
+    penalty_match = re.search(r'## 行政处罚记录.*?处罚金额：([\d,]+)', text, re.DOTALL)
     if penalty_match:
         amount = clean_number(penalty_match.group(1))
         records.append(f"行政处罚1条，金额{amount/10000:.2f}万元")
     
+    print(f"公共记录: {records}")
     return "\n".join(records) if records else "无"
 
 
 def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
-    # 暂不实现查询记录统计，返回全0
+    # 暂不实现查询记录统计
     return {"30d": 0, "31_90d": 0, "91_180d": 0, "181_360d": 0, "micro_60d": 0, "self_60d": 0}
+
 
 def build_risk_warning(asset_count: int, asset_balance: float, 
                        advance_count: int, advance_amount: float,
@@ -451,19 +449,42 @@ async def analyze(file: UploadFile):
     try:
         markdown_text = parse_pdf_with_textin(pdf_bytes)
         
+        print("=" * 50)
+        print("TextIn 原始输出（完整）")
+        print("=" * 50)
+        print(markdown_text)
+        print("=" * 50)
+        
         report_date = extract_report_date(markdown_text)
+        print(f"报告日期: {report_date}")
+        
         gender = extract_gender(markdown_text)
         age = extract_age(markdown_text, report_date)
         marriage = extract_marriage(markdown_text)
-        queries = extract_queries(markdown_text, report_date)
+        print(f"基础信息: 性别={gender}, 年龄={age}, 婚姻={marriage}")
+        
+        print("\n--- 资产处置 ---")
+        asset_count, asset_balance = extract_asset_disposal(markdown_text)
+        
+        print("\n--- 垫款 ---")
+        advance_count, advance_amount = extract_advance_payment(markdown_text)
+        
+        print("\n--- 贷款 ---")
         loans = extract_loans(markdown_text)
+        
+        print("\n--- 信用卡 ---")
         credits = extract_credits(markdown_text)
+        
+        print("\n--- 逾期 ---")
         overdue = extract_overdue(markdown_text)
+        
+        print("\n--- 担保 ---")
         guarantee_count, guarantee_balance = extract_guarantee(markdown_text)
+        
+        print("\n--- 公共记录 ---")
         public_records = extract_public_records(markdown_text)
         
-        asset_count, asset_balance = extract_asset_disposal(markdown_text)
-        advance_count, advance_amount = extract_advance_payment(markdown_text)
+        queries = extract_queries(markdown_text, report_date)
         
         risk_warning = build_risk_warning(asset_count, asset_balance, advance_count, advance_amount,
                                           loans, credits, public_records)
@@ -523,12 +544,13 @@ async def analyze(file: UploadFile):
         return JSONResponse({"success": True, "full_report": full_report})
         
     except Exception as e:
+        print(f"错误: {str(e)}")
         raise HTTPException(500, f"处理失败: {str(e)}")
 
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v3_full_regex"}
+    return {"status": "ok", "version": "v3_debug_full"}
 
 
 @app.get("/")
