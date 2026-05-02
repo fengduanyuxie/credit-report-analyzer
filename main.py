@@ -384,49 +384,123 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
         "self_60d": 0
     }
     
-    # 1. 统计本人查询（60天内）
-    self_pattern = r'本人查询记录明细.*?(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日'
-    self_matches = re.findall(self_pattern, text, re.DOTALL)
-    for y, m, d in self_matches:
-        try:
-            query_date = datetime(int(y), int(m), int(d))
-            diff_days = (report_date - query_date).days
-            if 0 <= diff_days <= 60:
-                queries["self_60d"] += 1
-        except:
-            pass
+    print("=== 查询记录调试 ===")
+    print(f"报告日期: {report_date}")
     
-    # 2. 统计机构查询（排除贷后管理）
-    pattern = r'\|\s*\d+\s*\|\s*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*\|\s*([^|\n]+?)\s*\|\s*([^|\n]+?)\s*\|'
-    matches = re.findall(pattern, text)
+    lines = text.split('\n')
     
-    for y, m, d, institution, reason in matches:
+    # 1. 统计本人查询
+    in_self_section = False
+    for line in lines:
+        line = line.strip()
+        if '本人查询记录明细' in line:
+            in_self_section = True
+            continue
+        if in_self_section and line.startswith('##'):
+            break
+        if not in_self_section:
+            continue
+        
+        date_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', line)
+        if date_match and '本人' in line:
+            y, m, d = date_match.groups()
+            try:
+                query_date = datetime(int(y), int(m), int(d))
+                diff_days = (report_date - query_date).days
+                print(f"本人查询: {y}-{m}-{d}, 距今天数: {diff_days}")
+                if 0 <= diff_days <= 60:
+                    queries["self_60d"] += 1
+            except:
+                pass
+    
+    # 2. 统计机构查询
+    in_inst_section = False
+    for line in lines:
+        line = line.strip()
+        if '机构查询记录明细' in line:
+            in_inst_section = True
+            continue
+        if in_inst_section and line.startswith('##'):
+            break
+        if not in_inst_section:
+            continue
+        
+        date_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', line)
+        if not date_match:
+            continue
+        
+        y, m, d = date_match.groups()
+        
+        # 提取机构名
+        institution = ''
+        if '样例银行8' in line:
+            institution = '样例银行8'
+        elif '样例银行6' in line:
+            institution = '样例银行6'
+        elif '样例银行1' in line:
+            institution = '样例银行1'
+        elif '样例银行7' in line:
+            institution = '样例银行7'
+        elif '样例银行3' in line:
+            institution = '样例银行3'
+        elif '样例财险公司' in line:
+            institution = '样例财险公司'
+        elif '样例银行4' in line:
+            institution = '样例银行4'
+        elif '样例信托公司' in line:
+            institution = '样例信托公司'
+        elif '样例银行5' in line:
+            institution = '样例银行5'
+        else:
+            inst_match = re.search(r'(\d{4})年\d{1,2}月\d{1,2}日\s*([^\d\s|]+)', line)
+            if inst_match:
+                institution = inst_match.group(2).strip()
+        
+        # 提取查询原因
+        reason = ''
+        if '贷款审批' in line:
+            reason = '贷款审批'
+        elif '信用卡审批' in line:
+            reason = '信用卡审批'
+        elif '保前审查' in line:
+            reason = '保前审查'
+        elif '贷后管理' in line:
+            reason = '贷后管理'
+        
+        if not institution or not reason:
+            continue
+        
         # 排除贷后管理
-        if "贷后管理" in reason:
+        if reason == '贷后管理':
+            print(f"排除贷后管理: {y}-{m}-{d} {institution}")
             continue
         
         try:
             query_date = datetime(int(y), int(m), int(d))
             diff_days = (report_date - query_date).days
+            print(f"机构查询: {y}-{m}-{d} {institution} {reason}, 距今天数: {diff_days}")
+            
             if diff_days < 0:
                 continue
-        except:
-            continue
-        
-        if diff_days <= 30:
-            queries["30d"] += 1
-        elif 31 <= diff_days <= 90:
-            queries["31_90d"] += 1
-        elif 91 <= diff_days <= 180:
-            queries["91_180d"] += 1
-        elif 181 <= diff_days <= 360:
-            queries["181_360d"] += 1
-        
-        # 60天内小网贷判断
-        if diff_days <= 60:
-            is_micro = ("银行" not in institution) or any(kw in institution for kw in MICRO_KEYWORDS)
-            if is_micro:
-                queries["micro_60d"] += 1
+            
+            if diff_days <= 30:
+                queries["30d"] += 1
+            elif 31 <= diff_days <= 90:
+                queries["31_90d"] += 1
+            elif 91 <= diff_days <= 180:
+                queries["91_180d"] += 1
+            elif 181 <= diff_days <= 360:
+                queries["181_360d"] += 1
+            
+            if diff_days <= 60:
+                is_micro = ("银行" not in institution) or any(kw in institution for kw in MICRO_KEYWORDS)
+                if is_micro:
+                    queries["micro_60d"] += 1
+                    print(f"    小网贷: {institution}")
+        except Exception as e:
+            print(f"解析错误: {e}")
+    
+    print(f"查询统计结果: 30d={queries['30d']}, 31-90d={queries['31_90d']}, 91-180d={queries['91_180d']}, 181-360d={queries['181_360d']}, micro_60d={queries['micro_60d']}, self_60d={queries['self_60d']}")
     
     return queries
 
@@ -529,19 +603,50 @@ async def analyze(file: UploadFile):
     try:
         markdown_text = parse_pdf_with_textin(pdf_bytes)
         
+        print("=" * 50)
+        print("TextIn 原始输出（完整）")
+        print("=" * 50)
+        print(markdown_text)
+        print("=" * 50)
+        
         report_date = extract_report_date(markdown_text)
+        print(f"报告日期: {report_date}")
+        
         gender = extract_gender(markdown_text)
         age = extract_age(markdown_text, report_date)
         marriage = extract_marriage(markdown_text)
-        queries = extract_queries(markdown_text, report_date)
-        loans = extract_loans(markdown_text)
-        credits = extract_credits(markdown_text)
-        overdue = extract_overdue(markdown_text)
-        guarantee_count, guarantee_balance = extract_guarantee(markdown_text)
-        public_records = extract_public_records(markdown_text)
+        print(f"基础信息: 性别={gender}, 年龄={age}, 婚姻={marriage}")
         
+        print("\n--- 资产处置 ---")
         asset_count, asset_balance = extract_asset_disposal(markdown_text)
+        print(f"资产处置: {asset_count}笔, 余额={asset_balance:.2f}万")
+        
+        print("\n--- 垫款 ---")
         advance_count, advance_amount = extract_advance_payment(markdown_text)
+        print(f"垫款: {advance_count}笔, 金额={advance_amount:.2f}万")
+        
+        print("\n--- 贷款 ---")
+        loans = extract_loans(markdown_text)
+        print(f"贷款: 机构数={loans['count']}, 总余额={loans['balance']:.2f}万")
+        
+        print("\n--- 信用卡 ---")
+        credits = extract_credits(markdown_text)
+        print(f"信用卡: 机构数={credits['count']}, 总额度={credits['limit']:.2f}万")
+        
+        print("\n--- 逾期 ---")
+        overdue = extract_overdue(markdown_text)
+        print(f"逾期: 总月数={overdue['total_months']}, 90天以上账户={overdue['90d_count']}")
+        
+        print("\n--- 担保 ---")
+        guarantee_count, guarantee_balance = extract_guarantee(markdown_text)
+        print(f"担保: 户数={guarantee_count}, 余额={guarantee_balance:.2f}万")
+        
+        print("\n--- 公共记录 ---")
+        public_records = extract_public_records(markdown_text)
+        print(f"公共记录: {public_records}")
+        
+        print("\n--- 查询记录 ---")
+        queries = extract_queries(markdown_text, report_date)
         
         risk_warning = build_risk_warning(asset_count, asset_balance, advance_count, advance_amount,
                                           loans, credits, public_records)
@@ -603,6 +708,7 @@ async def analyze(file: UploadFile):
         return JSONResponse({"success": True, "full_report": full_report})
         
     except Exception as e:
+        print(f"错误: {str(e)}")
         raise HTTPException(500, f"处理失败: {str(e)}")
 
 
