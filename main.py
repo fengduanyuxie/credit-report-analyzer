@@ -57,7 +57,7 @@ def parse_pdf_with_textin(pdf_bytes: bytes) -> str:
     }
     params = {
         "dpi": 144,
-        "get_image": "objects",
+        "get_image": "none",
         "markdown_details": 1,
         "page_count": 100,
         "parse_mode": "scan",
@@ -85,7 +85,6 @@ def extract_gender(text: str) -> str:
 
 
 def extract_age(text: str, report_date: datetime) -> int:
-    """从身份证号提取年龄"""
     id_match = re.search(r'证件号码[：:]\s*(\d{17}[\dXx])', text)
     if id_match:
         id_num = id_match.group(1)
@@ -112,7 +111,6 @@ def extract_marriage(text: str) -> str:
 
 
 def extract_report_date(text: str) -> datetime:
-    """提取报告日期"""
     match = re.search(r'报告时间[：:]\s*(\d{4})[-年]\s*(\d{1,2})[-月]\s*(\d{1,2})', text)
     if match:
         return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
@@ -129,15 +127,13 @@ def is_micro_institution(institution_name: str) -> bool:
 
 
 def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
-    """统计查询记录"""
     queries = {"30d": 0, "31_90d": 0, "91_180d": 0, "181_360d": 0, "micro_60d": 0, "self_60d": 0}
     
-    # 匹配机构查询记录（支持表格格式和文本格式）
-    # 表格格式：| 1 | 2023 年 11 月 01 日 | 马上消费金融股份有限公司 | 贷款审批 |
-    pattern1 = r'\|\s*\d+\s*\|\s*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*\|\s*([^|\n]+?)\s*\|\s*([^|\n]+?)\s*\|'
-    matches1 = re.findall(pattern1, text)
+    # 匹配机构查询记录
+    pattern = r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*\|\s*([^|\n]+?)\s*\|\s*([^|\n]+?)\s*\|'
+    matches = re.findall(pattern, text)
     
-    for y, m, d, institution, reason in matches1:
+    for y, m, d, institution, reason in matches:
         try:
             query_date = datetime(int(y), int(m), int(d))
         except:
@@ -163,7 +159,7 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
             queries["181_360d"] += 1
     
     # 匹配本人查询
-    self_pattern = r'\|\s*\d+\s*\|\s*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*\|\s*本人\s*\|\s*本人查询'
+    self_pattern = r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*\|\s*本人\s*\|\s*本人查询'
     self_matches = re.findall(self_pattern, text)
     for y, m, d in self_matches:
         try:
@@ -178,7 +174,6 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
 
 
 def extract_loans(text: str) -> Dict[str, Any]:
-    """统计贷款信息"""
     loans = {
         "count": 0, "balance": 0.0,
         "housing_count": 0, "housing_balance": 0.0,
@@ -189,19 +184,19 @@ def extract_loans(text: str) -> Dict[str, Any]:
     
     lines = text.split('\n')
     for line in lines:
-        # 跳过结清的账户
+        if not line or not re.match(r'^\d+\.', line):
+            continue
+        
         if "已结清" in line:
             continue
         
-        # 匹配发放类贷款
-        if re.match(r'^\d+\.', line) and '发放' in line and '余额' in line:
-            # 提取余额
+        # 发放类贷款
+        if '发放' in line and '余额' in line:
             balance_match = re.search(r'余额([\d,]+)', line)
             if not balance_match:
                 continue
             balance = clean_number(balance_match.group(1))
             
-            # 提取机构名
             inst_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日([^发]+)发放', line)
             institution = inst_match.group(1).strip() if inst_match else line
             
@@ -223,8 +218,8 @@ def extract_loans(text: str) -> Dict[str, Any]:
                 loans["micro_count"] += 1
                 loans["micro_balance"] += balance / 10000
         
-        # 匹配授信类账户
-        elif re.match(r'^\d+\.', line) and '授信' in line and '余额为' in line:
+        # 授信类账户
+        elif '授信' in line and '余额为' in line:
             balance_match = re.search(r'余额为([\d,]+)', line)
             if not balance_match:
                 continue
@@ -250,7 +245,6 @@ def extract_loans(text: str) -> Dict[str, Any]:
                 loans["micro_count"] += 1
                 loans["micro_balance"] += balance / 10000
         
-        # 匹配当前逾期
         if "当前有逾期" in line:
             loans["overdue_count"] += 1
     
@@ -258,7 +252,6 @@ def extract_loans(text: str) -> Dict[str, Any]:
 
 
 def extract_credits(text: str) -> Dict[str, Any]:
-    """统计信用卡信息"""
     credits = {
         "count": 0, "limit": 0.0, "used": 0.0, "overdue": 0,
         "abnormal": {"stop_payment": 0, "frozen": 0, "doubtful": 0}
@@ -266,33 +259,37 @@ def extract_credits(text: str) -> Dict[str, Any]:
     
     lines = text.split('\n')
     for line in lines:
-        # 匹配人民币贷记卡账户（排除美元账户）
-        if re.match(r'^\d+\.', line) and '贷记卡' in line and '人民币账户' in line and '美元' not in line:
-            # 提取信用额度
-            limit_match = re.search(r'信用额度([\d,]+)', line)
-            if not limit_match:
-                continue
-            limit = clean_number(limit_match.group(1))
-            
-            # 提取已使用额度
-            used_match = re.search(r'已使用额度([\d,]+)', line)
-            if not used_match:
-                used_match = re.search(r'余额([\d,]+)', line)
-            used = clean_number(used_match.group(1)) if used_match else 0
-            
-            if limit > 0:
-                credits["count"] += 1
-                credits["limit"] += limit / 10000
-                credits["used"] += used / 10000
-            
-            if "当前有逾期" in line:
-                credits["overdue"] += 1
-            if "止付" in line:
-                credits["abnormal"]["stop_payment"] += 1
-            if "冻结" in line:
-                credits["abnormal"]["frozen"] += 1
-            if "呆账" in line:
-                credits["abnormal"]["doubtful"] += 1
+        if not line or not re.match(r'^\d+\.', line):
+            continue
+        
+        if '贷记卡' not in line or '人民币' not in line:
+            continue
+        if '美元' in line:
+            continue
+        
+        limit_match = re.search(r'信用额度([\d,]+)', line)
+        if not limit_match:
+            continue
+        limit = clean_number(limit_match.group(1))
+        
+        used_match = re.search(r'已使用额度([\d,]+)', line)
+        if not used_match:
+            used_match = re.search(r'余额([\d,]+)', line)
+        used = clean_number(used_match.group(1)) if used_match else 0
+        
+        if limit > 0:
+            credits["count"] += 1
+            credits["limit"] += limit / 10000
+            credits["used"] += used / 10000
+        
+        if "当前有逾期" in line:
+            credits["overdue"] += 1
+        if "止付" in line:
+            credits["abnormal"]["stop_payment"] += 1
+        if "冻结" in line:
+            credits["abnormal"]["frozen"] += 1
+        if "呆账" in line:
+            credits["abnormal"]["doubtful"] += 1
     
     credits["usage_rate"] = round((credits["used"] / credits["limit"] * 100)) if credits["limit"] > 0 else 0
     
@@ -442,6 +439,10 @@ async def analyze(file: UploadFile):
     try:
         markdown_text = parse_pdf_with_textin(pdf_bytes)
         
+        print("=== TextIn 完整解析结果（完整）===")
+        print(markdown_text)
+        print("===================================")
+        
         report_date = extract_report_date(markdown_text)
         gender = extract_gender(markdown_text)
         age = extract_age(markdown_text, report_date)
@@ -514,7 +515,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v3_final_fixed"}
+    return {"status": "ok", "version": "v3_debug_full"}
 
 
 @app.get("/")
