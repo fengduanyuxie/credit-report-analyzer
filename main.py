@@ -387,98 +387,36 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
     print("=== 查询记录调试 ===")
     print(f"报告日期: {report_date}")
     
-    lines = text.split('\n')
+    # 1. 统计本人查询（60天内）
+    self_pattern = r'\|\s*\d+\s*\|\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s*\|\s*本人\s*\|\s*本人查询'
+    self_matches = re.findall(self_pattern, text)
+    print(f"本人查询匹配到 {len(self_matches)} 条")
     
-    # 1. 统计本人查询
-    in_self_section = False
-    for line in lines:
-        line = line.strip()
-        if '本人查询记录明细' in line:
-            in_self_section = True
-            continue
-        if in_self_section and line.startswith('##'):
-            break
-        if not in_self_section:
-            continue
-        
-        date_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', line)
-        if date_match and '本人' in line:
-            y, m, d = date_match.groups()
-            try:
-                query_date = datetime(int(y), int(m), int(d))
-                diff_days = (report_date - query_date).days
-                print(f"本人查询: {y}-{m}-{d}, 距今天数: {diff_days}")
-                if 0 <= diff_days <= 60:
-                    queries["self_60d"] += 1
-            except:
-                pass
+    for y, m, d in self_matches:
+        try:
+            query_date = datetime(int(y), int(m), int(d))
+            diff_days = (report_date - query_date).days
+            print(f"  本人查询: {y}-{m}-{d}, 距今天数: {diff_days}")
+            if 0 <= diff_days <= 60:
+                queries["self_60d"] += 1
+        except Exception as e:
+            print(f"  本人查询解析错误: {e}")
     
-    # 2. 统计机构查询
-    in_inst_section = False
-    for line in lines:
-        line = line.strip()
-        if '机构查询记录明细' in line:
-            in_inst_section = True
-            continue
-        if in_inst_section and line.startswith('##'):
-            break
-        if not in_inst_section:
-            continue
-        
-        date_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', line)
-        if not date_match:
-            continue
-        
-        y, m, d = date_match.groups()
-        
-        # 提取机构名
-        institution = ''
-        if '样例银行8' in line:
-            institution = '样例银行8'
-        elif '样例银行6' in line:
-            institution = '样例银行6'
-        elif '样例银行1' in line:
-            institution = '样例银行1'
-        elif '样例银行7' in line:
-            institution = '样例银行7'
-        elif '样例银行3' in line:
-            institution = '样例银行3'
-        elif '样例财险公司' in line:
-            institution = '样例财险公司'
-        elif '样例银行4' in line:
-            institution = '样例银行4'
-        elif '样例信托公司' in line:
-            institution = '样例信托公司'
-        elif '样例银行5' in line:
-            institution = '样例银行5'
-        else:
-            inst_match = re.search(r'(\d{4})年\d{1,2}月\d{1,2}日\s*([^\d\s|]+)', line)
-            if inst_match:
-                institution = inst_match.group(2).strip()
-        
-        # 提取查询原因
-        reason = ''
-        if '贷款审批' in line:
-            reason = '贷款审批'
-        elif '信用卡审批' in line:
-            reason = '信用卡审批'
-        elif '保前审查' in line:
-            reason = '保前审查'
-        elif '贷后管理' in line:
-            reason = '贷后管理'
-        
-        if not institution or not reason:
-            continue
-        
+    # 2. 统计机构查询（排除贷后管理）
+    inst_pattern = r'\|\s*\d+\s*\|\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s*\|\s*([^|\n]+?)\s*\|\s*([^|\n]+?)\s*\|'
+    matches = re.findall(inst_pattern, text)
+    print(f"机构查询匹配到 {len(matches)} 条")
+    
+    for y, m, d, institution, reason in matches:
         # 排除贷后管理
-        if reason == '贷后管理':
-            print(f"排除贷后管理: {y}-{m}-{d} {institution}")
+        if "贷后管理" in reason:
+            print(f"  排除贷后管理: {y}-{m}-{d} {institution}")
             continue
         
         try:
             query_date = datetime(int(y), int(m), int(d))
             diff_days = (report_date - query_date).days
-            print(f"机构查询: {y}-{m}-{d} {institution} {reason}, 距今天数: {diff_days}")
+            print(f"  机构查询: {y}-{m}-{d} {institution} {reason}, 距今天数: {diff_days}")
             
             if diff_days < 0:
                 continue
@@ -492,13 +430,14 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
             elif 181 <= diff_days <= 360:
                 queries["181_360d"] += 1
             
+            # 60天内小网贷判断
             if diff_days <= 60:
                 is_micro = ("银行" not in institution) or any(kw in institution for kw in MICRO_KEYWORDS)
                 if is_micro:
                     queries["micro_60d"] += 1
                     print(f"    小网贷: {institution}")
         except Exception as e:
-            print(f"解析错误: {e}")
+            print(f"  机构查询解析错误: {e}")
     
     print(f"查询统计结果: 30d={queries['30d']}, 31-90d={queries['31_90d']}, 91-180d={queries['91_180d']}, 181-360d={queries['181_360d']}, micro_60d={queries['micro_60d']}, self_60d={queries['self_60d']}")
     
