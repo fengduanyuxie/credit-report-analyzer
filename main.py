@@ -158,25 +158,20 @@ def extract_loans(text: str) -> Dict[str, Any]:
     for line in lines:
         line = line.strip()
         
-        # 检测贷款部分开始
         if line == '## 贷款':
             in_loan_section = True
             continue
         
-        # 检测贷款部分结束
         if in_loan_section and line.startswith('## ') and line != '## 贷款':
             break
         
         if not in_loan_section:
             continue
         
-        # 跳过空行和标题
         if not line or line.startswith('###'):
             continue
         
-        # 匹配贷款条目（以数字加点开头）
         if re.match(r'^\d+\.', line):
-            # 跳过担保信息
             if '为张三' in line or '为王五' in line or '为某样例' in line:
                 continue
             if "已结清" in line or "已转出" in line:
@@ -187,7 +182,6 @@ def extract_loans(text: str) -> Dict[str, Any]:
                 continue
             balance = clean_number(balance_match.group(1))
             
-            # 提取机构名
             inst_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日([^发放授信]+?)(?:发放|为)', line)
             institution = inst_match.group(1).strip() if inst_match else ''
             
@@ -324,8 +318,15 @@ def extract_guarantee(text: str) -> Tuple[int, float]:
         if re.match(r'^\d+\.', line):
             count += 1
             amount_match = re.search(r'相关还款责任金额([\d,]+)', line)
-            if amount_match:
-                balance += clean_number(amount_match.group(1)) / 10000
+            amount = clean_number(amount_match.group(1)) if amount_match else 0
+            
+            balance_match = re.search(r'贷款余额([\d,]+)', line)
+            if not balance_match:
+                balance_match = re.search(r'余额([\d,]+)', line)
+            loan_balance = clean_number(balance_match.group(1)) if balance_match else 0
+            
+            min_value = min(amount, loan_balance) if amount > 0 and loan_balance > 0 else max(amount, loan_balance)
+            balance += min_value / 10000
     
     # 也检查贷款部分中混杂的担保信息
     loan_section = re.search(r'## 贷款(.*?)(?=\n## |$)', text, re.DOTALL)
@@ -336,8 +337,13 @@ def extract_guarantee(text: str) -> Tuple[int, float]:
             if re.match(r'^\d+\.', line) and ('为张三' in line or '为王五' in line or '为某样例' in line):
                 count += 1
                 amount_match = re.search(r'相关还款责任金额([\d,]+)', line)
-                if amount_match:
-                    balance += clean_number(amount_match.group(1)) / 10000
+                amount = clean_number(amount_match.group(1)) if amount_match else 0
+                
+                balance_match = re.search(r'余额([\d,]+)', line)
+                loan_balance = clean_number(balance_match.group(1)) if balance_match else 0
+                
+                min_value = min(amount, loan_balance) if amount > 0 and loan_balance > 0 else max(amount, loan_balance)
+                balance += min_value / 10000
     
     return count, balance
 
@@ -369,7 +375,60 @@ def extract_public_records(text: str) -> str:
 
 
 def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
-    return {"30d": 0, "31_90d": 0, "91_180d": 0, "181_360d": 0, "micro_60d": 0, "self_60d": 0}
+    queries = {
+        "30d": 0,
+        "31_90d": 0,
+        "91_180d": 0,
+        "181_360d": 0,
+        "micro_60d": 0,
+        "self_60d": 0
+    }
+    
+    # 1. 统计本人查询（60天内）
+    self_pattern = r'本人查询记录明细.*?(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日'
+    self_matches = re.findall(self_pattern, text, re.DOTALL)
+    for y, m, d in self_matches:
+        try:
+            query_date = datetime(int(y), int(m), int(d))
+            diff_days = (report_date - query_date).days
+            if 0 <= diff_days <= 60:
+                queries["self_60d"] += 1
+        except:
+            pass
+    
+    # 2. 统计机构查询（排除贷后管理）
+    pattern = r'\|\s*\d+\s*\|\s*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*\|\s*([^|\n]+?)\s*\|\s*([^|\n]+?)\s*\|'
+    matches = re.findall(pattern, text)
+    
+    for y, m, d, institution, reason in matches:
+        # 排除贷后管理
+        if "贷后管理" in reason:
+            continue
+        
+        try:
+            query_date = datetime(int(y), int(m), int(d))
+            diff_days = (report_date - query_date).days
+            if diff_days < 0:
+                continue
+        except:
+            continue
+        
+        if diff_days <= 30:
+            queries["30d"] += 1
+        elif 31 <= diff_days <= 90:
+            queries["31_90d"] += 1
+        elif 91 <= diff_days <= 180:
+            queries["91_180d"] += 1
+        elif 181 <= diff_days <= 360:
+            queries["181_360d"] += 1
+        
+        # 60天内小网贷判断
+        if diff_days <= 60:
+            is_micro = ("银行" not in institution) or any(kw in institution for kw in MICRO_KEYWORDS)
+            if is_micro:
+                queries["micro_60d"] += 1
+    
+    return queries
 
 
 def build_risk_warning(asset_count: int, asset_balance: float, 
@@ -501,11 +560,13 @@ async def analyze(file: UploadFile):
 风险预警：{risk_warning}
 
 *查询记录
+机构
 30天内：{queries['30d']}
 31-90天：{queries['31_90d']}
 90-180天：{queries['91_180d']}
 180-360天：{queries['181_360d']}
 60天内小网贷：{queries['micro_60d']}
+本人
 60天内本人：{queries['self_60d']}
 
 *5年内逾期
@@ -547,7 +608,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v3_final"}
+    return {"status": "ok", "version": "v3_final_all_fixed"}
 
 
 @app.get("/")
