@@ -22,34 +22,26 @@ app.add_middleware(
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
-# TextIn 旧版 API 配置
 TEXTIN_APP_ID = "0fd9239e2c07003f28d8262745cd3a92"
 TEXTIN_SECRET_CODE = "e87042c286a20aeb61790587432baadd"
 TEXTIN_API_URL = "https://api.textin.com/ai/service/v1/pdf_to_markdown"
 
-# 小网贷关键词（机构名包含任一即视为小网贷）
 MICRO_KEYWORDS = [
     "网商", "微众", "亿联", "金城", "裕民", "海峡", "振兴", "新网",
     "苏商", "中关村", "富民", "锡商", "百信", "长安", "兰州",
     "威海", "众邦", "蓝海", "华通", "华瑞", "友利"
 ]
 
-# 房贷关键词
 HOUSING_KEYWORDS = ["个人住房", "住房贷款", "商用房", "公积金"]
-
-# 车贷关键词
 CAR_KEYWORDS = ["汽车"]
 
-# 查询原因需要统计的类型（排除贷后管理）
 QUERY_REASONS_TO_COUNT = ["贷款审批", "信用卡审批", "保前审查", "担保资格审查", "法人代表、负责人、高管等资信审查"]
 EXCLUDED_QUERY_REASONS = ["贷后管理"]
 
 
 def clean_number(num_str: str) -> float:
-    """清理数字字符串，支持中英文逗号和空格"""
     if not num_str:
         return 0.0
-    # 去除空格，替换中文逗号为英文逗号，再去除逗号
     cleaned = num_str.replace(' ', '').replace('，', '').replace(',', '')
     try:
         return float(cleaned)
@@ -57,15 +49,12 @@ def clean_number(num_str: str) -> float:
         return 0.0
 
 
-# ========== 1. TextIn 解析 ==========
 def parse_pdf_with_textin(pdf_bytes: bytes) -> str:
-    """使用旧版 TextIn API 解析 PDF，返回 markdown 文本"""
     headers = {
         "x-ti-app-id": TEXTIN_APP_ID,
         "x-ti-secret-code": TEXTIN_SECRET_CODE,
         "Content-Type": "application/octet-stream"
     }
-    
     params = {
         "dpi": 144,
         "get_image": "objects",
@@ -74,32 +63,19 @@ def parse_pdf_with_textin(pdf_bytes: bytes) -> str:
         "parse_mode": "scan",
         "table_flavor": "html"
     }
-    
-    response = requests.post(
-        TEXTIN_API_URL,
-        params=params,
-        headers=headers,
-        data=pdf_bytes,
-        timeout=60
-    )
-    
+    response = requests.post(TEXTIN_API_URL, params=params, headers=headers, data=pdf_bytes, timeout=60)
     if response.status_code != 200:
         raise Exception(f"TextIn API HTTP错误: {response.status_code}")
-    
     result = response.json()
     if result.get("code") != 200:
         raise Exception(f"TextIn 业务错误: {result.get('message', '未知错误')}")
-    
     markdown = result.get("result", {}).get("markdown", "")
     if not markdown:
         raise Exception("TextIn 未返回文本内容")
-    
     return markdown
 
 
-# ========== 2. 基础信息提取 ==========
 def extract_gender(text: str) -> str:
-    """从身份证号第17位判断性别（奇数为男，偶数为女）"""
     match = re.search(r'证件号码[：:]\s*(\d{17}[\dXx])', text)
     if match:
         id_num = match.group(1)
@@ -109,7 +85,6 @@ def extract_gender(text: str) -> str:
 
 
 def extract_age(text: str, report_date: datetime) -> int:
-    """提取出生日期并计算周岁年龄"""
     birth_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', text)
     if birth_match:
         birth_year = int(birth_match.group(1))
@@ -124,7 +99,6 @@ def extract_age(text: str, report_date: datetime) -> int:
 
 
 def extract_marriage(text: str) -> str:
-    """提取婚姻状况"""
     if "已婚" in text:
         return "已婚"
     elif "未婚" in text:
@@ -133,16 +107,13 @@ def extract_marriage(text: str) -> str:
 
 
 def extract_report_date(text: str) -> datetime:
-    """提取报告日期"""
     match = re.search(r'报告时间[：:]\s*(\d{4})[-年]\s*(\d{1,2})[-月]\s*(\d{1,2})', text)
     if match:
         return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
     return datetime.now()
 
 
-# ========== 3. 小网贷判断 ==========
 def is_micro_institution(institution_name: str) -> bool:
-    """判断机构是否为小网贷：机构名包含关键词 或 不含'银行'二字"""
     for kw in MICRO_KEYWORDS:
         if kw in institution_name:
             return True
@@ -151,37 +122,21 @@ def is_micro_institution(institution_name: str) -> bool:
     return False
 
 
-# ========== 4. 查询记录统计 ==========
 def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
-    """统计各时间段查询次数"""
-    queries = {
-        "30d": 0,
-        "31_90d": 0,
-        "91_180d": 0,
-        "181_360d": 0,
-        "micro_60d": 0,
-        "self_60d": 0
-    }
-    
-    # 匹配机构查询记录明细
+    queries = {"30d": 0, "31_90d": 0, "91_180d": 0, "181_360d": 0, "micro_60d": 0, "self_60d": 0}
     pattern = r'(\d{4})年(\d{1,2})月(\d{1,2})日\s+([^\d\n]+?)\s+(贷款审批|信用卡审批|贷后管理|保前审查|担保资格审查|法人代表、负责人、高管等资信审查|本人查询)'
     matches = re.findall(pattern, text)
-    
     for y, m, d, institution, reason in matches:
         query_date = datetime(int(y), int(m), int(d))
         diff_days = (report_date - query_date).days
-        
         if "本人查询" in reason:
             if diff_days <= 60:
                 queries["self_60d"] += 1
             continue
-        
         if reason in EXCLUDED_QUERY_REASONS:
             continue
-        
         if reason not in QUERY_REASONS_TO_COUNT:
             continue
-        
         if diff_days <= 30:
             queries["30d"] += 1
             if diff_days <= 60 and is_micro_institution(institution):
@@ -194,33 +149,26 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
             queries["91_180d"] += 1
         elif 181 <= diff_days <= 360:
             queries["181_360d"] += 1
-    
     return queries
 
 
-# ========== 5. 贷款信息统计 ==========
 def extract_loans(text: str) -> Dict[str, Any]:
-    """统计贷款信息"""
     loans = {
-        "count": 0,
-        "balance": 0.0,
-        "housing_count": 0,
-        "housing_balance": 0.0,
-        "car_count": 0,
-        "car_balance": 0.0,
-        "micro_count": 0,
-        "micro_balance": 0.0,
+        "count": 0, "balance": 0.0,
+        "housing_count": 0, "housing_balance": 0.0,
+        "car_count": 0, "car_balance": 0.0,
+        "micro_count": 0, "micro_balance": 0.0,
         "overdue_count": 0
     }
     
-    # 匹配发放类贷款（支持中英文逗号）
-    loan_pattern = r'(\d+)\.\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s+([^发]+)发放的[\d,]+\S+\s+.*?余额([\d,，]+)'
+    # 匹配发放类贷款（适配 TextIn 格式：余额xxx。）
+    loan_pattern = r'(\d+)\.\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s+([^0-9\n]+?)发放的[\d,]+\S+\s+.*?余额([\d,，]+)[。\s]'
     matches = re.findall(loan_pattern, text, re.DOTALL)
     
     for match in matches:
         balance = clean_number(match[5])
-        institution = match[4]
-        desc = match[4]
+        institution = match[4].strip()
+        desc = match[4].strip()
         
         if balance > 0:
             loans["count"] += 1
@@ -243,14 +191,14 @@ def extract_loans(text: str) -> Dict[str, Any]:
         if "当前有逾期" in desc:
             loans["overdue_count"] += 1
     
-    # 匹配授信类账户
-    credit_pattern = r'(\d+)\.\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s+([^为]+)为[^，]+授信.*?余额为([\d,，]+)'
+    # 匹配授信类账户（格式：...为其他个人消费贷款授信...余额为xxx）
+    credit_pattern = r'(\d+)\.\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s+([^0-9\n]+?)为[^，]+?授信.*?余额为([\d,，]+)'
     credit_matches = re.findall(credit_pattern, text, re.DOTALL)
     
     for match in credit_matches:
         balance = clean_number(match[5])
-        institution = match[4]
-        desc = match[4]
+        institution = match[4].strip()
+        desc = match[4].strip()
         
         loans["count"] += 1
         loans["balance"] += balance / 10000
@@ -275,27 +223,17 @@ def extract_loans(text: str) -> Dict[str, Any]:
     return loans
 
 
-# ========== 6. 信用卡信息统计 ==========
 def extract_credits(text: str) -> Dict[str, Any]:
-    """统计信用卡信息"""
     credits = {
-        "count": 0,
-        "limit": 0.0,
-        "used": 0.0,
-        "overdue": 0,
-        "abnormal": {
-            "stop_payment": 0,
-            "frozen": 0,
-            "doubtful": 0
-        }
+        "count": 0, "limit": 0.0, "used": 0.0, "overdue": 0,
+        "abnormal": {"stop_payment": 0, "frozen": 0, "doubtful": 0}
     }
     
-    # 匹配人民币贷记卡账户
-    card_pattern = r'(\d+)\.\s*(\d{4})年\d{1,2}月\d{1,2}日\s+([^发]+)发放的贷记卡[^）]*[（(]人民币账户[）)]'
+    card_pattern = r'(\d+)\.\s*(\d{4})年\d{1,2}月\d{1,2}日\s+([^0-9\n]+?)发放的贷记卡[^）]*[（(]人民币账户[）)]'
     matches = re.findall(card_pattern, text, re.DOTALL)
     
     for match in matches:
-        institution = match[2]
+        institution = match[2].strip()
         start_pos = text.find(match[0])
         end_pos = text.find("\n", start_pos + 200)
         account_text = text[start_pos:end_pos] if end_pos > 0 else text[start_pos:start_pos + 500]
@@ -317,7 +255,6 @@ def extract_credits(text: str) -> Dict[str, Any]:
         
         if "当前有逾期" in account_text:
             credits["overdue"] += 1
-        
         if "止付" in account_text:
             credits["abnormal"]["stop_payment"] += 1
         if "冻结" in account_text:
@@ -339,70 +276,50 @@ def extract_credits(text: str) -> Dict[str, Any]:
     return credits
 
 
-# ========== 7. 逾期信息统计 ==========
 def extract_overdue(text: str) -> Dict[str, int]:
-    """统计逾期信息"""
     overdue = {"total_months": 0, "90d_count": 0}
-    
     month_pattern = r'最近5年内有(\d+)个月处于逾期状态'
     months = re.findall(month_pattern, text)
     overdue["total_months"] = sum(int(m) for m in months)
-    
     overdue_90_pattern = r'发生过90天以上逾期'
     overdue["90d_count"] = len(re.findall(overdue_90_pattern, text))
-    
     return overdue
 
 
-# ========== 8. 担保信息统计 ==========
 def extract_guarantee(text: str) -> Tuple[int, float]:
-    """统计担保信息"""
     count = 0
     balance = 0.0
-    
     pattern = r'(\d+)\.\s*(\d{4})年\d{1,2}月\d{1,2}日，为[^，]+?[公司个人][^，]*?相关还款责任金额([\d,，]+)'
     matches = re.findall(pattern, text)
-    
     for match in matches:
         count += 1
         balance += clean_number(match[1]) / 10000
-    
     return count, balance
 
 
-# ========== 9. 公共记录统计 ==========
 def extract_public_records(text: str) -> str:
-    """统计公共记录"""
     records = []
-    
     tax_match = re.search(r'欠税记录.*?欠税总额：([\d,，]+)', text, re.DOTALL)
     if tax_match:
         amount = clean_number(tax_match.group(1))
         records.append(f"欠税1条，金额{amount/10000:.2f}万元")
-    
     judgment_matches = re.findall(r'民事判决记录.*?诉讼标的金额：([\d,，]+)', text, re.DOTALL)
     if judgment_matches:
         total = sum(clean_number(j) for j in judgment_matches)
         records.append(f"民事判决{len(judgment_matches)}件，金额{total/10000:.2f}万元")
-    
     enforcement_matches = re.findall(r'强制执行记录.*?申请执行标的金额：([\d,，]+)', text, re.DOTALL)
     if enforcement_matches:
         total = sum(clean_number(e) for e in enforcement_matches)
         records.append(f"强制执行{len(enforcement_matches)}件，金额{total/10000:.2f}万元")
-    
     penalty_match = re.search(r'行政处罚记录.*?处罚金额：([\d,，]+)', text, re.DOTALL)
     if penalty_match:
         amount = clean_number(penalty_match.group(1))
         records.append(f"行政处罚1条，金额{amount/10000:.2f}万元")
-    
     return "\n".join(records) if records else "无"
 
 
-# ========== 10. 风险预警汇总 ==========
 def build_risk_warning(loans: Dict, credits: Dict, public_records: str) -> str:
-    """汇总风险预警信息"""
     warnings = []
-    
     if loans.get("overdue_count", 0) > 0:
         warnings.append(f"贷款当逾{loans['overdue_count']}个")
     if credits.get("overdue", 0) > 0:
@@ -411,17 +328,14 @@ def build_risk_warning(loans: Dict, credits: Dict, public_records: str) -> str:
         warnings.append(credits["abnormal_display"])
     if public_records != "无":
         warnings.append(public_records.replace("\n", "；"))
-    
     return "；".join(warnings) if warnings else "无"
 
 
-# ========== 11. 构建大模型分析提示词 ==========
 def build_llm_prompt(stats: Dict[str, Any]) -> str:
     q = stats["queries"]
     l = stats["loans"]
     c = stats["credits"]
     o = stats["overdue"]
-    
     return f"""你是一名资深的助贷风控专家。
 
 请基于以下【真实统计数据】，生成一份专业的征信分析报告（仅需第二部分：展开分析），不要简单重复第一部分的数字。
@@ -458,16 +372,15 @@ def build_llm_prompt(stats: Dict[str, Any]) -> str:
 
 请按以下结构输出：
 1. 基本信息解读
-2. 查询记录分析（评估资金紧张程度）
+2. 查询记录分析
 3. 逾期记录分析
-4. 贷款信息分析（负债结构、小网贷依赖度）
-5. 信用卡信息分析（融资能力判断）
-6. 综合评估与风控建议（风险等级：正常/关注/次级/可疑/损失）
+4. 贷款信息分析
+5. 信用卡信息分析
+6. 综合评估与风控建议
 
 要求：语言专业、逻辑清晰、每个判断都要有数据支撑。"""
 
 
-# ========== 12. 调用 DeepSeek ==========
 def call_deepseek(prompt: str) -> str:
     payload = {
         "model": "deepseek-chat",
@@ -479,15 +392,12 @@ def call_deepseek(prompt: str) -> str:
         "Content-Type": "application/json"
     }
     response = requests.post(DEEPSEEK_API_URL, json=payload, headers=headers, timeout=120)
-    
     if response.status_code != 200:
         raise Exception(f"DeepSeek API 错误: {response.status_code} - {response.text[:200]}")
-    
     data = response.json()
     return data["choices"][0]["message"]["content"]
 
 
-# ========== 13. API 接口 ==========
 @app.post("/api/analyze")
 async def analyze(file: UploadFile):
     if not DEEPSEEK_API_KEY:
@@ -499,14 +409,11 @@ async def analyze(file: UploadFile):
     
     try:
         markdown_text = parse_pdf_with_textin(pdf_bytes)
-        
-        # 调试打印
         print("=== TextIn 解析结果（前2000字符）===")
         print(markdown_text[:2000])
         print("===================================")
         
         report_date = extract_report_date(markdown_text)
-        
         gender = extract_gender(markdown_text)
         age = extract_age(markdown_text, report_date)
         marriage = extract_marriage(markdown_text)
@@ -519,16 +426,10 @@ async def analyze(file: UploadFile):
         risk_warning = build_risk_warning(loans, credits, public_records)
         
         stats = {
-            "gender": gender,
-            "age": age,
-            "marriage": marriage,
-            "queries": queries,
-            "loans": loans,
-            "credits": credits,
-            "overdue": overdue
+            "gender": gender, "age": age, "marriage": marriage,
+            "queries": queries, "loans": loans, "credits": credits, "overdue": overdue
         }
         
-        # 第一部分：简要汇总
         part1 = f"""### 第一部分：简要汇总
 
 *基本信息
@@ -572,7 +473,6 @@ async def analyze(file: UploadFile):
 *公共记录
 {public_records}"""
         
-        # 第二部分：大模型分析
         llm_prompt = build_llm_prompt(stats)
         part2 = call_deepseek(llm_prompt)
         
@@ -585,7 +485,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v3_programmatic_fixed", "parser": "textin_old"}
+    return {"status": "ok", "version": "v3_fixed_regex"}
 
 
 @app.get("/")
