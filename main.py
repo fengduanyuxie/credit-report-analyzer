@@ -376,7 +376,9 @@ def extract_public_records(text: str) -> str:
 
 def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
     """
-    基于查询有值版，增加排除贷后管理和超过360天的过滤
+    基于查询有值版的原始正则，只增加过滤逻辑：
+    1. 排除贷后管理
+    2. 排除超过360天的记录
     """
     queries = {
         "30d": 0,
@@ -390,8 +392,8 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
     print("=== 查询提取调试 ===")
     print(f"报告日期: {report_date}")
     
-    # 1. 提取本人查询
-    self_pattern = r'<tr>.*?etable\s*\d+\s*</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>本人</td>.*?<td>本人查询.*?<td>.*?</tr>'
+    # 1. 提取本人查询（使用原版正则，不改动）
+    self_pattern = r'<tr>.*?etable\s*\d+\s*</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>本人</td>.*?<td>本人查询.*?</td>.*?</tr>'
     self_matches = list(re.finditer(self_pattern, text, re.DOTALL))
     print(f"本人查询匹配到 {len(self_matches)} 条")
     
@@ -403,12 +405,11 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
             print(f"  本人查询: {y}-{m}-{d}, 距今天数: {diff_days}")
             if 0 <= diff_days <= 60:
                 queries["self_60d"] += 1
-                print(f"    计入: 60天内本人查询")
         except Exception as e:
             print(f"    解析错误: {e}")
     
-    # 2. 提取机构查询
-    inst_pattern = r'<tr>.*?etable\s*\d+\s*</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>([^<]+)</td>.*?<td>([^<]+)</td>.*?</tr>'
+    # 2. 提取机构查询（使用原版正则，不改动）
+    inst_pattern = r'<tr>.*?etable\s*\d+\s*</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日<td>.*?<td>([^<]+)</td>.*?<td>([^<]+)</td>.*?</tr>'
     inst_matches = list(re.finditer(inst_pattern, text, re.DOTALL))
     print(f"机构查询匹配到 {len(inst_matches)} 条")
     
@@ -642,7 +643,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v3_queries_filtered"}
+    return {"status": "ok", "version": "v3_working_with_filters"}
 
 
 @app.get("/")
