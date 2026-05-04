@@ -377,7 +377,7 @@ def extract_public_records(text: str) -> str:
 def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
     """
     基于 TextIn 真实输出（HTML 表格）提取查询记录
-    使用整个表格行的匹配方式，并增加过滤逻辑
+    日期格式：2025 年 05 月 12 日（注意有空格）
     """
     queries = {
         "30d": 0,
@@ -391,8 +391,8 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
     print("=== 查询提取调试 ===")
     print(f"报告日期: {report_date}")
     
-    # 1. 提取本人查询（匹配整个表格行）
-    self_pattern = r'<tr>.*?etable\s*\d+\s*</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>本人</td>.*?<td>本人查询.*?</td>.*??''
+    # 1. 提取本人查询（HTML 表格）
+    self_pattern = r'<tr>.*?etable\s*\d+\s*</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>本人</td>.*?<td>本人查询.*?</td>.*?</tr>'
     self_matches = list(re.finditer(self_pattern, text, re.DOTALL))
     print(f"本人查询匹配到 {len(self_matches)} 条")
     
@@ -408,8 +408,8 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
         except Exception as e:
             print(f"    解析错误: {e}")
     
-    # 2. 提取机构查询（匹配整个表格行）
-    inst_pattern = r'<tr>.*?etable\s*\d+\s*</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>([^<]+)</td>.*?<td>([^<]+)</td>.*??''
+    # 2. 提取机构查询（HTML 表格）
+    inst_pattern = r'<tr>.*?etable\s*\d+\s*</table>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>([^<]+)</td>.*?<td>([^<]+)</td>.*?</tr>'
     matches = list(re.finditer(inst_pattern, text, re.DOTALL))
     print(f"机构查询匹配到 {len(matches)} 条")
     
@@ -452,7 +452,6 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
             
             # 60天内小网贷判断
             if diff_days <= 60:
-                # 小网贷判断：机构名不含"银行" 或 包含限定词
                 is_micro = ("银行" not in institution) or any(kw in institution for kw in MICRO_KEYWORDS)
                 if is_micro:
                     queries["micro_60d"] += 1
@@ -643,7 +642,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v3_queries_filtered"}
+    return {"status": "ok", "version": "v3_queries_debug"}
 
 
 @app.get("/")
