@@ -35,9 +35,6 @@ MICRO_KEYWORDS = [
 HOUSING_KEYWORDS = ["个人住房", "住房贷款", "商用房", "公积金", "住房公积金"]
 CAR_KEYWORDS = ["汽车"]
 
-# 查询原因类型
-QUERY_REASONS = ["贷款审批", "信用卡审批", "保前审查", "担保资格审查", "法人代表、负责人、高管等资信审查"]
-
 
 def clean_number(num_str: str) -> float:
     if not num_str:
@@ -379,8 +376,8 @@ def extract_public_records(text: str) -> str:
 
 def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
     """
-    健壮的查询记录提取函数
-    基于关键词和位置，不依赖固定的表格列顺序
+    基于 TextIn 真实输出（HTML 表格）提取查询记录
+    日期格式：2025 年 05 月 12 日（注意有空格）
     """
     queries = {
         "30d": 0,
@@ -391,9 +388,11 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
         "self_60d": 0
     }
     
-    # 1. 提取本人查询（60天内）
-    self_pattern = r'(\d{4})年(\d{1,2})月(\d{1,2})日\s*\|\s*本人\s*\|\s*本人查询'
-    for y, m, d in re.findall(self_pattern, text):
+    # 1. 提取本人查询（HTML 表格）
+    # 匹配格式：<tr><td>编号</td><td>日期</td><td>本人</td><td>本人查询...</td></tr>
+    self_pattern = r'<tr>.*?<td>\d+</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>本人</td>.*?<td>本人查询.*?</td>.*?</tr>'
+    for match in re.finditer(self_pattern, text, re.DOTALL):
+        y, m, d = match.group(1), match.group(2), match.group(3)
         try:
             query_date = datetime(int(y), int(m), int(d))
             diff_days = (report_date - query_date).days
@@ -402,68 +401,40 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
         except:
             pass
     
-    # 2. 提取机构查询（在机构查询记录明细区域中）
-    inst_section = re.search(r'\*\*机构查询记录明细\*\*(.*?)(?=\*\*|$)', text, re.DOTALL)
-    if not inst_section:
-        return queries
-    
-    section_text = inst_section.group(1)
-    
-    # 找到所有日期
-    date_pattern = r'(\d{4})年(\d{1,2})月(\d{1,2})日'
-    date_matches = list(re.finditer(date_pattern, section_text))
-    
-    for date_match in date_matches:
-        y, m, d = date_match.groups()
+    # 2. 提取机构查询（HTML 表格）
+    # 匹配格式：<tr><td>编号</td><td>日期</td><td>机构名</td><td>查询原因</td></tr>
+    inst_pattern = r'<tr>.*?<td>\d+</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>([^<]+)</td>.*?<td>([^<]+)</td>.*?</tr>'
+    for match in re.finditer(inst_pattern, text, re.DOTALL):
+        y, m, d = match.group(1), match.group(2), match.group(3)
+        institution = match.group(4).strip()
+        reason = match.group(5).strip()
+        
+        # 排除贷后管理
+        if "贷后管理" in reason:
+            continue
+        
         try:
             query_date = datetime(int(y), int(m), int(d))
             diff_days = (report_date - query_date).days
+            if diff_days < 0:
+                continue
+            
+            if diff_days <= 30:
+                queries["30d"] += 1
+            elif 31 <= diff_days <= 90:
+                queries["31_90d"] += 1
+            elif 91 <= diff_days <= 180:
+                queries["91_180d"] += 1
+            elif 181 <= diff_days <= 360:
+                queries["181_360d"] += 1
+            
+            # 60天内小网贷判断
+            if diff_days <= 60:
+                is_micro = ("银行" not in institution) or any(kw in institution for kw in MICRO_KEYWORDS)
+                if is_micro:
+                    queries["micro_60d"] += 1
         except:
-            continue
-        
-        # 在日期附近（150字符内）查找查询原因
-        start = date_match.end()
-        end = min(start + 150, len(section_text))
-        nearby = section_text[start:end]
-        
-        # 查找查询原因
-        reason = None
-        for r in QUERY_REASONS:
-            if r in nearby:
-                reason = r
-                break
-        
-        if not reason:
-            continue
-        
-        # 排除贷后管理
-        if reason == "贷后管理":
-            continue
-        
-        # 提取机构名（日期和原因之间的内容）
-        inst_match = re.search(r'日\s*([^|\n]+?)\s*(?:' + '|'.join(QUERY_REASONS) + ')', nearby)
-        if inst_match:
-            institution = inst_match.group(1).strip()
-            # 清理换行和<br>标签
-            institution = institution.replace('\n', '').replace('<br>', ' ').strip()
-        else:
-            institution = ""
-        
-        # 按天数分段统计
-        if diff_days <= 30:
-            queries["30d"] += 1
-        elif 31 <= diff_days <= 90:
-            queries["31_90d"] += 1
-        elif 91 <= diff_days <= 180:
-            queries["91_180d"] += 1
-        elif 181 <= diff_days <= 360:
-            queries["181_360d"] += 1
-        
-        # 60天内小网贷判断
-        if diff_days <= 60 and institution:
-            is_micro = ("银行" not in institution) or any(kw in institution for kw in MICRO_KEYWORDS)
-            if is_micro:
-                queries["micro_60d"] += 1
+            pass
     
     return queries
 
@@ -646,7 +617,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v3_robust_queries"}
+    return {"status": "ok", "version": "v3_html_table_fixed"}
 
 
 @app.get("/")
