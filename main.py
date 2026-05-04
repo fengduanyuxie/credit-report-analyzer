@@ -377,7 +377,7 @@ def extract_public_records(text: str) -> str:
 def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
     """
     基于 TextIn 真实输出（HTML 表格）提取查询记录
-    日期格式：2025 年 05 月 12 日（注意有空格）
+    使用整个表格行的匹配方式，并增加过滤逻辑
     """
     queries = {
         "30d": 0,
@@ -391,8 +391,8 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
     print("=== 查询提取调试 ===")
     print(f"报告日期: {report_date}")
     
-    # 1. 提取本人查询（HTML 表格）
-    self_pattern = r'<tr>.*?etable\s*\d+\s*</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>本人</td>.*?<td>本人查询.*?</td>.*?</tr>'
+    # 1. 提取本人查询（匹配整个表格行）
+    self_pattern = r'<tr>.*?etable\s*\d+\s*</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>本人</td>.*?<td>本人查询.*?</td>.*??''
     self_matches = list(re.finditer(self_pattern, text, re.DOTALL))
     print(f"本人查询匹配到 {len(self_matches)} 条")
     
@@ -408,8 +408,8 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
         except Exception as e:
             print(f"    解析错误: {e}")
     
-    # 2. 提取机构查询（HTML 表格）
-    inst_pattern = r'</table>.*?<tr>\d+</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>([^<]+)</td>.*?<td>([^<]+)</td>.*?</tr>'
+    # 2. 提取机构查询（匹配整个表格行）
+    inst_pattern = r'<tr>.*?etable\s*\d+\s*</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>([^<]+)</td>.*?<td>([^<]+)</td>.*??''
     matches = list(re.finditer(inst_pattern, text, re.DOTALL))
     print(f"机构查询匹配到 {len(matches)} 条")
     
@@ -428,26 +428,31 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
                 print(f"    排除: 贷后管理")
                 continue
             
+            # 排除超过360天的记录
+            if diff_days > 360:
+                print(f"    排除: 超过360天")
+                continue
+            
             if diff_days < 0:
                 continue
             
+            # 按天数分段
             if diff_days <= 30:
                 queries["30d"] += 1
                 print(f"    计入: 30天内")
-            elif 31 <= diff_days <= 90:
+            elif diff_days <= 90:
                 queries["31_90d"] += 1
                 print(f"    计入: 31-90天")
-            elif 91 <= diff_days <= 180:
+            elif diff_days <= 180:
                 queries["91_180d"] += 1
                 print(f"    计入: 91-180天")
-            elif 181 <= diff_days <= 360:
+            elif diff_days <= 360:
                 queries["181_360d"] += 1
                 print(f"    计入: 181-360天")
-            else:
-                print(f"    不计入: 超过360天")
             
             # 60天内小网贷判断
             if diff_days <= 60:
+                # 小网贷判断：机构名不含"银行" 或 包含限定词
                 is_micro = ("银行" not in institution) or any(kw in institution for kw in MICRO_KEYWORDS)
                 if is_micro:
                     queries["micro_60d"] += 1
@@ -638,7 +643,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v3_debug_queries"}
+    return {"status": "ok", "version": "v3_queries_filtered"}
 
 
 @app.get("/")
