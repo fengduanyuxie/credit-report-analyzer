@@ -376,7 +376,7 @@ def extract_public_records(text: str) -> str:
 
 def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
     """
-    同时支持 HTML 表格和 Markdown 表格格式
+    基于关键词和位置匹配，不依赖表格结构
     """
     queries = {
         "30d": 0,
@@ -390,61 +390,63 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
     print("=== 查询提取调试 ===")
     print(f"报告日期: {report_date}")
     
-    # ========== 1. 提取本人查询 ==========
-    # 格式1: HTML 表格
-    self_pattern_html = r'<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>\s*<td>本人</td>\s*<td>本人查询'
-    # 格式2: Markdown 表格
-    self_pattern_md = r'\|\s*(\d+)\s*\|\s*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*\|\s*本人\s*\|\s*本人查询'
-    
-    # 本人查询 - HTML
-    for match in re.finditer(self_pattern_html, text, re.DOTALL):
+    # 1. 提取本人查询（60天内）
+    # 格式：2025 年 05 月 13 日 | 本人 | 本人查询
+    self_pattern = r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*\|\s*本人\s*\|\s*本人查询'
+    for match in re.finditer(self_pattern, text):
         y, m, d = match.group(1), match.group(2), match.group(3)
         try:
             query_date = datetime(int(y), int(m), int(d))
             diff_days = (report_date - query_date).days
-            print(f"  本人查询(HTML): {y}-{m}-{d}, 距今天数: {diff_days}")
+            print(f"  本人查询: {y}-{m}-{d}, 距今天数: {diff_days}")
             if 0 <= diff_days <= 60:
                 queries["self_60d"] += 1
         except:
             pass
     
-    # 本人查询 - Markdown
-    for match in re.finditer(self_pattern_md, text):
-        y, m, d = match.group(2), match.group(3), match.group(4)
-        try:
-            query_date = datetime(int(y), int(m), int(d))
-            diff_days = (report_date - query_date).days
-            print(f"  本人查询(MD): {y}-{m}-{d}, 距今天数: {diff_days}")
-            if 0 <= diff_days <= 60:
-                queries["self_60d"] += 1
-        except:
-            pass
+    # 2. 提取机构查询（关键词 + 位置匹配）
+    date_pattern = r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日'
+    reasons = ["贷款审批", "信用卡审批", "保前审查", "担保资格审查"]
     
-    # ========== 2. 提取机构查询 ==========
-    # 格式1: HTML 表格
-    inst_pattern_html = r'<tr>.*?etable\s*\d+\s*</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>([^<]+)</td>.*?<td>([^<]+)</td>.*?</tr>'
-    # 格式2: Markdown 表格
-    inst_pattern_md = r'\|\s*\d+\s*\|\s*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*\|\s*([^|\n]+?)\s*\|\s*([^|\n]+?)\s*\|'
-    
-    # 机构查询 - HTML
-    html_matches = list(re.finditer(inst_pattern_html, text, re.DOTALL))
-    print(f"机构查询(HTML)匹配到 {len(html_matches)} 条")
-    
-    for match in html_matches:
-        y, m, d = match.group(1), match.group(2), match.group(3)
-        institution = match.group(4).strip()
-        reason = match.group(5).strip()
+    for date_match in re.finditer(date_pattern, text):
+        y, m, d = date_match.group(1), date_match.group(2), date_match.group(3)
         
-        print(f"  机构查询(HTML): {y}-{m}-{d}, {institution}, {reason}")
+        # 在日期后面 200 字符内查找查询原因
+        start = date_match.end()
+        end = min(start + 200, len(text))
+        nearby = text[start:end]
         
-        if "贷后管理" in reason:
-            print(f"    排除: 贷后管理")
+        # 检查是否有有效查询原因
+        reason = None
+        for r in reasons:
+            if r in nearby:
+                reason = r
+                break
+        
+        if not reason:
             continue
         
+        # 排除贷后管理
+        if "贷后管理" in nearby:
+            print(f"  排除贷后管理: {y}-{m}-{d}")
+            continue
+        
+        # 提取机构名（日期和原因之间的内容）
+        inst_match = re.search(r'日\s*([^|\n]+?)\s*(?:' + '|'.join(reasons) + ')', nearby)
+        if inst_match:
+            institution = inst_match.group(1).strip()
+            # 清理 HTML 标签和多余字符
+            institution = re.sub(r'<[^>]+>', '', institution)
+            institution = institution.replace('\n', '').replace('<br>', ' ').strip()
+            # 取第一段（如果有多行）
+            institution = institution.split(' ')[0]
+        else:
+            institution = ""
+        
         try:
             query_date = datetime(int(y), int(m), int(d))
             diff_days = (report_date - query_date).days
-            print(f"    距今天数: {diff_days}")
+            print(f"  机构查询: {y}-{m}-{d}, {institution}, {reason}, 距今天数: {diff_days}")
             
             if diff_days > 360:
                 print(f"    排除: 超过360天")
@@ -452,59 +454,24 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
             
             if diff_days <= 30:
                 queries["30d"] += 1
+                print(f"    计入: 30天内")
             elif diff_days <= 90:
                 queries["31_90d"] += 1
+                print(f"    计入: 31-90天")
             elif diff_days <= 180:
                 queries["91_180d"] += 1
+                print(f"    计入: 91-180天")
             elif diff_days <= 360:
                 queries["181_360d"] += 1
+                print(f"    计入: 181-360天")
             
             if diff_days <= 60:
                 is_micro = ("银行" not in institution) or any(kw in institution for kw in MICRO_KEYWORDS)
                 if is_micro:
                     queries["micro_60d"] += 1
-        except:
-            pass
-    
-    # 机构查询 - Markdown
-    md_matches = list(re.finditer(inst_pattern_md, text))
-    print(f"机构查询(MD)匹配到 {len(md_matches)} 条")
-    
-    for match in md_matches:
-        y, m, d = match.group(1), match.group(2), match.group(3)
-        institution = match.group(4).strip()
-        reason = match.group(5).strip()
-        
-        print(f"  机构查询(MD): {y}-{m}-{d}, {institution}, {reason}")
-        
-        if "贷后管理" in reason:
-            print(f"    排除: 贷后管理")
-            continue
-        
-        try:
-            query_date = datetime(int(y), int(m), int(d))
-            diff_days = (report_date - query_date).days
-            print(f"    距今天数: {diff_days}")
-            
-            if diff_days > 360:
-                print(f"    排除: 超过360天")
-                continue
-            
-            if diff_days <= 30:
-                queries["30d"] += 1
-            elif diff_days <= 90:
-                queries["31_90d"] += 1
-            elif diff_days <= 180:
-                queries["91_180d"] += 1
-            elif diff_days <= 360:
-                queries["181_360d"] += 1
-            
-            if diff_days <= 60:
-                is_micro = ("银行" not in institution) or any(kw in institution for kw in MICRO_KEYWORDS)
-                if is_micro:
-                    queries["micro_60d"] += 1
-        except:
-            pass
+                    print(f"    小网贷: 是")
+        except Exception as e:
+            print(f"    解析错误: {e}")
     
     print(f"最终结果: 30d={queries['30d']}, 31-90d={queries['31_90d']}, 91-180d={queries['91_180d']}, 181-360d={queries['181_360d']}, micro_60d={queries['micro_60d']}, self_60d={queries['self_60d']}")
     
@@ -609,6 +576,10 @@ async def analyze(file: UploadFile):
     try:
         markdown_text = parse_pdf_with_textin(pdf_bytes)
         
+        print("=== TextIn 完整解析结果（完整）===")
+        print(markdown_text)
+        print("===================================")
+        
         report_date = extract_report_date(markdown_text)
         gender = extract_gender(markdown_text)
         age = extract_age(markdown_text, report_date)
@@ -689,7 +660,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v3_final_dual_format"}
+    return {"status": "ok", "version": "v3_keyword_based"}
 
 
 @app.get("/")
