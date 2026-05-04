@@ -689,7 +689,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v3_dual_format"}
+    return {"status": "ok", "version": "v3_final_dual_format"}
 
 
 @app.get("/")
