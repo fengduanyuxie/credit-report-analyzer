@@ -388,78 +388,53 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
         "self_60d": 0
     }
     
-    print("=== 查询提取调试 ===")
-    print(f"报告日期: {report_date}")
-    
     # 1. 提取本人查询（HTML 表格）
-    self_pattern = r'<tr>.*?etable\s*\d+\s*</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>本人</td>.*?<td>本人查询.*?</td>.*?</tr>'
-    self_matches = list(re.finditer(self_pattern, text, re.DOTALL))
-    print(f"本人查询匹配到 {len(self_matches)} 条")
-    
-    for match in self_matches:
+    # 匹配格式：<tr><td>编号</td><td>日期</td><td>本人</td><td>本人查询...</td></tr>
+    self_pattern = r'<tr>.*?<td>\d+</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>本人</td>.*?<td>本人查询.*?</td>.*?</tr>'
+    for match in re.finditer(self_pattern, text, re.DOTALL):
         y, m, d = match.group(1), match.group(2), match.group(3)
         try:
             query_date = datetime(int(y), int(m), int(d))
             diff_days = (report_date - query_date).days
-            print(f"  本人查询: {y}-{m}-{d}, 距今天数: {diff_days}")
             if 0 <= diff_days <= 60:
                 queries["self_60d"] += 1
-                print(f"    计入: 60天内本人查询")
-        except Exception as e:
-            print(f"    解析错误: {e}")
+        except:
+            pass
     
     # 2. 提取机构查询（HTML 表格）
-    inst_pattern = r'<tr>.*?etable\s*\d+\s*</table>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>([^<]+)</td>.*?<td>([^<]+)</td>.*?</tr>'
-    matches = list(re.finditer(inst_pattern, text, re.DOTALL))
-    print(f"机构查询匹配到 {len(matches)} 条")
-    
-    for match in matches:
+    # 匹配格式：<tr><td>编号</td><td>日期</td><td>机构名</td><td>查询原因</td></tr>
+    inst_pattern = r'<tr>.*?<td>\d+</td>.*?<td>(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日</td>.*?<td>([^<]+)</td>.*?<td>([^<]+)</td>.*?</tr>'
+    for match in re.finditer(inst_pattern, text, re.DOTALL):
         y, m, d = match.group(1), match.group(2), match.group(3)
         institution = match.group(4).strip()
         reason = match.group(5).strip()
         
+        # 排除贷后管理
+        if "贷后管理" in reason:
+            continue
+        
         try:
             query_date = datetime(int(y), int(m), int(d))
             diff_days = (report_date - query_date).days
-            print(f"  机构查询: {y}-{m}-{d}, 机构: {institution}, 原因: {reason}, 距今天数: {diff_days}")
-            
-            # 排除贷后管理
-            if "贷后管理" in reason:
-                print(f"    排除: 贷后管理")
-                continue
-            
-            # 排除超过360天的记录
-            if diff_days > 360:
-                print(f"    排除: 超过360天")
-                continue
-            
             if diff_days < 0:
                 continue
             
-            # 按天数分段
             if diff_days <= 30:
                 queries["30d"] += 1
-                print(f"    计入: 30天内")
-            elif diff_days <= 90:
+            elif 31 <= diff_days <= 90:
                 queries["31_90d"] += 1
-                print(f"    计入: 31-90天")
-            elif diff_days <= 180:
+            elif 91 <= diff_days <= 180:
                 queries["91_180d"] += 1
-                print(f"    计入: 91-180天")
-            elif diff_days <= 360:
+            elif 181 <= diff_days <= 360:
                 queries["181_360d"] += 1
-                print(f"    计入: 181-360天")
             
             # 60天内小网贷判断
             if diff_days <= 60:
                 is_micro = ("银行" not in institution) or any(kw in institution for kw in MICRO_KEYWORDS)
                 if is_micro:
                     queries["micro_60d"] += 1
-                    print(f"    小网贷: 是")
-        except Exception as e:
-            print(f"    解析错误: {e}")
-    
-    print(f"最终结果: 30d={queries['30d']}, 31-90d={queries['31_90d']}, 91-180d={queries['91_180d']}, 181-360d={queries['181_360d']}, micro_60d={queries['micro_60d']}, self_60d={queries['self_60d']}")
+        except:
+            pass
     
     return queries
 
@@ -642,7 +617,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v3_queries_debug"}
+    return {"status": "ok", "version": "v3_html_table_fixed"}
 
 
 @app.get("/")
