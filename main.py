@@ -22,9 +22,10 @@ app.add_middleware(
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
+# TextIn 新版 xParse API 配置
 TEXTIN_APP_ID = "0fd9239e2c07003f28d8262745cd3a92"
 TEXTIN_SECRET_CODE = "e87042c286a20aeb61790587432baadd"
-TEXTIN_API_URL = "https://api.textin.com/ai/service/v1/pdf_to_markdown"
+XPARSE_API_URL = "https://api.textin.com/api/v1/xparse/parse/sync"
 
 MICRO_KEYWORDS = [
     "网商", "微众", "亿联", "金城", "裕民", "海峡", "振兴", "新网",
@@ -46,30 +47,41 @@ def clean_number(num_str: str) -> float:
         return 0.0
 
 
-def parse_pdf_with_textin(pdf_bytes: bytes) -> str:
+def parse_pdf_with_xparse(pdf_bytes: bytes) -> Dict[str, Any]:
+    """
+    使用新版 xParse API 解析 PDF，返回结构化 JSON
+    """
     headers = {
         "x-ti-app-id": TEXTIN_APP_ID,
         "x-ti-secret-code": TEXTIN_SECRET_CODE,
         "Content-Type": "application/octet-stream"
     }
-    params = {
-        "dpi": 144,
-        "get_image": "none",
-        "markdown_details": 1,
-        "page_count": 100,
-        "parse_mode": "scan",
-        "table_flavor": "html"
+    
+    # 配置参数：要求返回表格结构和页面信息
+    config = {
+        "capabilities": {
+            "include_table_structure": True,
+            "pages": True,
+            "include_hierarchy": True
+        }
     }
-    response = requests.post(TEXTIN_API_URL, params=params, headers=headers, data=pdf_bytes, timeout=60)
+    
+    response = requests.post(
+        XPARSE_API_URL,
+        params={"config": json.dumps(config)},
+        headers=headers,
+        data=pdf_bytes,
+        timeout=60
+    )
+    
     if response.status_code != 200:
-        raise Exception(f"TextIn API HTTP错误: {response.status_code}")
+        raise Exception(f"xParse API HTTP错误: {response.status_code}")
+    
     result = response.json()
     if result.get("code") != 200:
-        raise Exception(f"TextIn 业务错误: {result.get('message', '未知错误')}")
-    markdown = result.get("result", {}).get("markdown", "")
-    if not markdown:
-        raise Exception("TextIn 未返回文本内容")
-    return markdown
+        raise Exception(f"xParse API 业务错误: {result.get('message', '未知错误')}")
+    
+    return result.get("data", {})
 
 
 def extract_gender(text: str) -> str:
@@ -107,7 +119,7 @@ def extract_marriage(text: str) -> str:
     return "未知"
 
 
-def extract_report_date(text: str) -> datetime:
+def extract_report_date_from_text(text: str) -> datetime:
     match = re.search(r'报告时间[：:]\s*(\d{4})-(\d{2})-(\d{2})', text)
     if match:
         return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
@@ -374,9 +386,10 @@ def extract_public_records(text: str) -> str:
     return "\n".join(records) if records else "无"
 
 
-def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
+def extract_queries_from_xparse(data: Dict[str, Any], report_date: datetime) -> Dict[str, int]:
     """
-    基于关键词和位置匹配，不依赖表格结构
+    从 xParse 返回的结构化 JSON 中提取查询记录
+    这是新版 API 的核心解析函数
     """
     queries = {
         "30d": 0,
@@ -387,13 +400,105 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
         "self_60d": 0
     }
     
-    print("=== 查询提取调试 ===")
+    print("=== 查询提取调试（xParse 结构化数据）===")
     print(f"报告日期: {report_date}")
     
-    # 1. 提取本人查询（60天内）
-    # 格式：2025 年 05 月 13 日 | 本人 | 本人查询
+    # 获取 elements 数组
+    elements = data.get("elements", [])
+    print(f"共找到 {len(elements)} 个元素")
+    
+    # 遍历所有元素，查找表格
+    for element in elements:
+        if element.get("type") != "Table":
+            continue
+        
+        print(f"找到表格元素: {element.get('element_id')}")
+        
+        # 获取表格结构
+        table_structure = element.get("table_structure", {})
+        cells = table_structure.get("cells", [])
+        
+        if not cells:
+            print("  表格无单元格数据")
+            continue
+        
+        # 按行重组单元格
+        rows = {}
+        for cell in cells:
+            row_num = cell.get("row", 0)
+            col_num = cell.get("col", 0)
+            text = cell.get("text", "").strip()
+            
+            if row_num not in rows:
+                rows[row_num] = {}
+            rows[row_num][col_num] = text
+        
+        print(f"  表格共 {len(rows)} 行")
+        
+        # 遍历每一行，提取查询记录
+        for row_num, row_data in rows.items():
+            # 跳过表头行（通常第一行或包含"查询日期"、"查询机构"的行）
+            row_text = " ".join(str(v) for v in row_data.values())
+            if "查询日期" in row_text or "查询机构" in row_text or "查询原因" in row_text:
+                print(f"    跳过表头行 {row_num}")
+                continue
+            
+            # 提取各列数据（根据常见的列顺序）
+            # 常见的列顺序：编号 | 查询日期 | 查询机构 | 查询原因
+            date = row_data.get(2, "") or row_data.get(1, "")  # 日期可能在第二列或第一列
+            institution = row_data.get(3, "") or row_data.get(2, "")  # 机构名
+            reason = row_data.get(4, "") or row_data.get(3, "")  # 查询原因
+            
+            # 如果没有提取到有效数据，跳过
+            if not date or not reason:
+                continue
+            
+            print(f"    行 {row_num}: 日期={date}, 机构={institution}, 原因={reason}")
+            
+            # 排除贷后管理
+            if "贷后管理" in reason:
+                print(f"      排除: 贷后管理")
+                continue
+            
+            # 解析日期
+            try:
+                # 日期格式：2023年02月24日
+                date_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', date)
+                if date_match:
+                    y, m, d = int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3))
+                    query_date = datetime(y, m, d)
+                    diff_days = (report_date - query_date).days
+                    print(f"      距今天数: {diff_days}")
+                    
+                    if diff_days > 360:
+                        print(f"      排除: 超过360天")
+                        continue
+                    
+                    if diff_days <= 30:
+                        queries["30d"] += 1
+                        print(f"      计入: 30天内")
+                    elif diff_days <= 90:
+                        queries["31_90d"] += 1
+                        print(f"      计入: 31-90天")
+                    elif diff_days <= 180:
+                        queries["91_180d"] += 1
+                        print(f"      计入: 91-180天")
+                    elif diff_days <= 360:
+                        queries["181_360d"] += 1
+                        print(f"      计入: 181-360天")
+                    
+                    if diff_days <= 60 and institution:
+                        is_micro = ("银行" not in institution) or any(kw in institution for kw in MICRO_KEYWORDS)
+                        if is_micro:
+                            queries["micro_60d"] += 1
+                            print(f"      小网贷: 是")
+            except Exception as e:
+                print(f"      解析日期错误: {e}")
+    
+    # 提取本人查询（如果有单独的区域）
+    markdown = data.get("markdown", "")
     self_pattern = r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*\|\s*本人\s*\|\s*本人查询'
-    for match in re.finditer(self_pattern, text):
+    for match in re.finditer(self_pattern, markdown):
         y, m, d = match.group(1), match.group(2), match.group(3)
         try:
             query_date = datetime(int(y), int(m), int(d))
@@ -403,75 +508,6 @@ def extract_queries(text: str, report_date: datetime) -> Dict[str, int]:
                 queries["self_60d"] += 1
         except:
             pass
-    
-    # 2. 提取机构查询（关键词 + 位置匹配）
-    date_pattern = r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日'
-    reasons = ["贷款审批", "信用卡审批", "保前审查", "担保资格审查"]
-    
-    for date_match in re.finditer(date_pattern, text):
-        y, m, d = date_match.group(1), date_match.group(2), date_match.group(3)
-        
-        # 在日期后面 200 字符内查找查询原因
-        start = date_match.end()
-        end = min(start + 200, len(text))
-        nearby = text[start:end]
-        
-        # 检查是否有有效查询原因
-        reason = None
-        for r in reasons:
-            if r in nearby:
-                reason = r
-                break
-        
-        if not reason:
-            continue
-        
-        # 排除贷后管理
-        if "贷后管理" in nearby:
-            print(f"  排除贷后管理: {y}-{m}-{d}")
-            continue
-        
-        # 提取机构名（日期和原因之间的内容）
-        inst_match = re.search(r'日\s*([^|\n]+?)\s*(?:' + '|'.join(reasons) + ')', nearby)
-        if inst_match:
-            institution = inst_match.group(1).strip()
-            # 清理 HTML 标签和多余字符
-            institution = re.sub(r'<[^>]+>', '', institution)
-            institution = institution.replace('\n', '').replace('<br>', ' ').strip()
-            # 取第一段（如果有多行）
-            institution = institution.split(' ')[0]
-        else:
-            institution = ""
-        
-        try:
-            query_date = datetime(int(y), int(m), int(d))
-            diff_days = (report_date - query_date).days
-            print(f"  机构查询: {y}-{m}-{d}, {institution}, {reason}, 距今天数: {diff_days}")
-            
-            if diff_days > 360:
-                print(f"    排除: 超过360天")
-                continue
-            
-            if diff_days <= 30:
-                queries["30d"] += 1
-                print(f"    计入: 30天内")
-            elif diff_days <= 90:
-                queries["31_90d"] += 1
-                print(f"    计入: 31-90天")
-            elif diff_days <= 180:
-                queries["91_180d"] += 1
-                print(f"    计入: 91-180天")
-            elif diff_days <= 360:
-                queries["181_360d"] += 1
-                print(f"    计入: 181-360天")
-            
-            if diff_days <= 60:
-                is_micro = ("银行" not in institution) or any(kw in institution for kw in MICRO_KEYWORDS)
-                if is_micro:
-                    queries["micro_60d"] += 1
-                    print(f"    小网贷: 是")
-        except Exception as e:
-            print(f"    解析错误: {e}")
     
     print(f"最终结果: 30d={queries['30d']}, 31-90d={queries['31_90d']}, 91-180d={queries['91_180d']}, 181-360d={queries['181_360d']}, micro_60d={queries['micro_60d']}, self_60d={queries['self_60d']}")
     
@@ -574,17 +610,26 @@ async def analyze(file: UploadFile):
         raise HTTPException(400, "文件不能超过10MB")
     
     try:
-        markdown_text = parse_pdf_with_textin(pdf_bytes)
+        # 1. 使用新版 xParse API 解析 PDF
+        xparse_data = parse_pdf_with_xparse(pdf_bytes)
         
-        print("=== TextIn 完整解析结果（完整）===")
-        print(markdown_text)
-        print("===================================")
+        # 2. 获取 markdown 文本（用于提取非表格信息）
+        markdown_text = xparse_data.get("markdown", "")
         
-        report_date = extract_report_date(markdown_text)
+        print("=== xParse 解析结果（结构化）===")
+        print(f"成功页数: {xparse_data.get('success_count', 0)}")
+        print(f"元素数量: {len(xparse_data.get('elements', []))}")
+        print("================================")
+        
+        # 3. 提取报告日期
+        report_date = extract_report_date_from_text(markdown_text)
+        
+        # 4. 提取基础信息
         gender = extract_gender(markdown_text)
         age = extract_age(markdown_text, report_date)
         marriage = extract_marriage(markdown_text)
-        queries = extract_queries(markdown_text, report_date)
+        
+        # 5. 提取其他统计（贷款、信用卡等）
         loans = extract_loans(markdown_text)
         credits = extract_credits(markdown_text)
         overdue = extract_overdue(markdown_text)
@@ -593,6 +638,9 @@ async def analyze(file: UploadFile):
         
         asset_count, asset_balance = extract_asset_disposal(markdown_text)
         advance_count, advance_amount = extract_advance_payment(markdown_text)
+        
+        # 6. 提取查询记录（从结构化 JSON 中）
+        queries = extract_queries_from_xparse(xparse_data, report_date)
         
         risk_warning = build_risk_warning(asset_count, asset_balance, advance_count, advance_amount,
                                           loans, credits, public_records)
@@ -660,7 +708,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v3_keyword_based"}
+    return {"status": "ok", "version": "v4_xparse_structured"}
 
 
 @app.get("/")
