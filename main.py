@@ -54,7 +54,7 @@ def parse_pdf_with_xparse(pdf_bytes: bytes) -> Dict[str, Any]:
     headers = {
         "x-ti-app-id": TEXTIN_APP_ID,
         "x-ti-secret-code": TEXTIN_SECRET_CODE,
-        "Content-Type": "application/octet-stream"
+        # 不要设置 Content-Type，让 requests 自动处理 multipart/form-data
     }
     
     # 配置参数：要求返回表格结构和页面信息
@@ -66,16 +66,26 @@ def parse_pdf_with_xparse(pdf_bytes: bytes) -> Dict[str, Any]:
         }
     }
     
+    # 使用 files 参数上传文件
+    files = {
+        "file": ("report.pdf", pdf_bytes, "application/pdf")
+    }
+    
+    # 将 config 作为表单字段提交
+    data = {
+        "config": json.dumps(config)
+    }
+    
     response = requests.post(
         XPARSE_API_URL,
-        params={"config": json.dumps(config)},
         headers=headers,
-        data=pdf_bytes,
+        files=files,
+        data=data,
         timeout=60
     )
     
     if response.status_code != 200:
-        raise Exception(f"xParse API HTTP错误: {response.status_code}")
+        raise Exception(f"xParse API HTTP错误: {response.status_code} - {response.text[:200]}")
     
     result = response.json()
     if result.get("code") != 200:
