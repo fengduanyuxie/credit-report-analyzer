@@ -54,7 +54,6 @@ def parse_pdf_with_xparse(pdf_bytes: bytes) -> Dict[str, Any]:
     headers = {
         "x-ti-app-id": TEXTIN_APP_ID,
         "x-ti-secret-code": TEXTIN_SECRET_CODE,
-        # 不要设置 Content-Type，让 requests 自动处理 multipart/form-data
     }
     
     # 配置参数：要求返回表格结构和页面信息
@@ -71,7 +70,6 @@ def parse_pdf_with_xparse(pdf_bytes: bytes) -> Dict[str, Any]:
         "file": ("report.pdf", pdf_bytes, "application/pdf")
     }
     
-    # 将 config 作为表单字段提交
     data = {
         "config": json.dumps(config)
     }
@@ -399,7 +397,7 @@ def extract_public_records(text: str) -> str:
 def extract_queries_from_xparse(data: Dict[str, Any], report_date: datetime) -> Dict[str, int]:
     """
     从 xParse 返回的结构化 JSON 中提取查询记录
-    这是新版 API 的核心解析函数
+    严格区分机构查询和本人查询
     """
     queries = {
         "30d": 0,
@@ -413,23 +411,48 @@ def extract_queries_from_xparse(data: Dict[str, Any], report_date: datetime) -> 
     print("=== 查询提取调试（xParse 结构化数据）===")
     print(f"报告日期: {report_date}")
     
-    # 获取 elements 数组
     elements = data.get("elements", [])
     print(f"共找到 {len(elements)} 个元素")
     
-    # 遍历所有元素，查找表格
+    # 获取 markdown 用于定位表格标题
+    markdown = data.get("markdown", "")
+    
+    # 先找到机构查询表格和本人查询表格的 element_id
+    inst_table_id = None
+    self_table_id = None
+    
+    # 遍历所有元素，找到标题
+    for i, element in enumerate(elements):
+        elem_type = element.get("type", "")
+        text = element.get("text", "")
+        
+        if elem_type == "Title" and "机构查询记录明细" in text:
+            # 机构查询表格通常在该标题之后
+            for j in range(i + 1, len(elements)):
+                if elements[j].get("type") == "Table":
+                    inst_table_id = elements[j].get("element_id")
+                    print(f"找到机构查询表格: {inst_table_id}")
+                    break
+        
+        if elem_type == "Title" and "本人查询记录明细" in text:
+            for j in range(i + 1, len(elements)):
+                if elements[j].get("type") == "Table":
+                    self_table_id = elements[j].get("element_id")
+                    print(f"找到本人查询表格: {self_table_id}")
+                    break
+    
+    # 遍历所有表格元素
     for element in elements:
         if element.get("type") != "Table":
             continue
         
-        print(f"找到表格元素: {element.get('element_id')}")
+        element_id = element.get("element_id", "")
         
         # 获取表格结构
         table_structure = element.get("table_structure", {})
         cells = table_structure.get("cells", [])
         
         if not cells:
-            print("  表格无单元格数据")
             continue
         
         # 按行重组单元格
@@ -437,87 +460,121 @@ def extract_queries_from_xparse(data: Dict[str, Any], report_date: datetime) -> 
         for cell in cells:
             row_num = cell.get("row", 0)
             col_num = cell.get("col", 0)
-            text = cell.get("text", "").strip()
+            cell_text = cell.get("text", "").strip()
             
             if row_num not in rows:
                 rows[row_num] = {}
-            rows[row_num][col_num] = text
+            rows[row_num][col_num] = cell_text
         
-        print(f"  表格共 {len(rows)} 行")
+        # 判断是机构查询表格还是本人查询表格
+        is_inst_table = (element_id == inst_table_id)
+        is_self_table = (element_id == self_table_id)
         
-        # 遍历每一行，提取查询记录
-        for row_num, row_data in rows.items():
-            # 跳过表头行（通常第一行或包含"查询日期"、"查询机构"的行）
-            row_text = " ".join(str(v) for v in row_data.values())
-            if "查询日期" in row_text or "查询机构" in row_text or "查询原因" in row_text:
-                print(f"    跳过表头行 {row_num}")
-                continue
-            
-            # 提取各列数据（根据常见的列顺序）
-            # 常见的列顺序：编号 | 查询日期 | 查询机构 | 查询原因
-            date = row_data.get(2, "") or row_data.get(1, "")  # 日期可能在第二列或第一列
-            institution = row_data.get(3, "") or row_data.get(2, "")  # 机构名
-            reason = row_data.get(4, "") or row_data.get(3, "")  # 查询原因
-            
-            # 如果没有提取到有效数据，跳过
-            if not date or not reason:
-                continue
-            
-            print(f"    行 {row_num}: 日期={date}, 机构={institution}, 原因={reason}")
-            
-            # 排除贷后管理
-            if "贷后管理" in reason:
-                print(f"      排除: 贷后管理")
-                continue
-            
-            # 解析日期
-            try:
-                # 日期格式：2023年02月24日
-                date_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', date)
-                if date_match:
-                    y, m, d = int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3))
-                    query_date = datetime(y, m, d)
-                    diff_days = (report_date - query_date).days
-                    print(f"      距今天数: {diff_days}")
-                    
-                    if diff_days > 360:
-                        print(f"      排除: 超过360天")
-                        continue
-                    
-                    if diff_days <= 30:
-                        queries["30d"] += 1
-                        print(f"      计入: 30天内")
-                    elif diff_days <= 90:
-                        queries["31_90d"] += 1
-                        print(f"      计入: 31-90天")
-                    elif diff_days <= 180:
-                        queries["91_180d"] += 1
-                        print(f"      计入: 91-180天")
-                    elif diff_days <= 360:
-                        queries["181_360d"] += 1
-                        print(f"      计入: 181-360天")
-                    
-                    if diff_days <= 60 and institution:
-                        is_micro = ("银行" not in institution) or any(kw in institution for kw in MICRO_KEYWORDS)
-                        if is_micro:
-                            queries["micro_60d"] += 1
-                            print(f"      小网贷: 是")
-            except Exception as e:
-                print(f"      解析日期错误: {e}")
-    
-    # 提取本人查询（如果有单独的区域）
-    markdown = data.get("markdown", "")
-    self_pattern = r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*\|\s*本人\s*\|\s*本人查询'
-    for match in re.finditer(self_pattern, markdown):
-        y, m, d = match.group(1), match.group(2), match.group(3)
-        try:
-            query_date = datetime(int(y), int(m), int(d))
-            diff_days = (report_date - query_date).days
-            print(f"  本人查询: {y}-{m}-{d}, 距今天数: {diff_days}")
-            if 0 <= diff_days <= 60:
-                queries["self_60d"] += 1
-        except:
-            pass
+        # 如果没有通过标题定位到，尝试通过内容判断
+        if not is_inst_table and not is_self_table:
+            for row_num, row_data in rows.items():
+                row_text = " ".join(str(v) for v in row_data.values())
+                if "本人" in row_text and ("本人查询" in row_text or "查询" in row_text):
+                    is_self_table = True
+                    print(f"通过内容判断为本人查询表格: {element_id}")
+                    break
+                if "贷款审批" in row_text or "信用卡审批" in row_text or "保前审查" in row_text or "贷后管理" in row_text:
+                    is_inst_table = True
+                    print(f"通过内容判断为机构查询表格: {element_id}")
+                    break
+        
+        # 处理机构查询表格
+        if is_inst_table:
+            print(f"处理机构查询表格 {element_id[:8]}...")
+            for row_num, row_data in rows.items():
+                # 跳过表头行
+                row_text = " ".join(str(v) for v in row_data.values())
+                if "查询日期" in row_text or "查询机构" in row_text or "查询原因" in row_text:
+                    print(f"    跳过表头行 {row_num}")
+                    continue
+                
+                # 提取各列数据（根据实际列顺序调整）
+                # 常见的列顺序：第1列是编号，第2列是日期，第3列是机构，第4列是原因
+                date = row_data.get(2, "") or row_data.get(1, "")
+                institution = row_data.get(3, "") or row_data.get(2, "")
+                reason = row_data.get(4, "") or row_data.get(3, "")
+                
+                if not date or not reason:
+                    continue
+                
+                print(f"    行 {row_num}: 日期={date}, 机构={institution}, 原因={reason}")
+                
+                # 排除贷后管理
+                if "贷后管理" in reason:
+                    print(f"      排除: 贷后管理")
+                    continue
+                
+                # 解析日期
+                try:
+                    date_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', date)
+                    if date_match:
+                        y, m, d = int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3))
+                        query_date = datetime(y, m, d)
+                        diff_days = (report_date - query_date).days
+                        print(f"      距今天数: {diff_days}")
+                        
+                        if diff_days > 360:
+                            print(f"      排除: 超过360天")
+                            continue
+                        
+                        if diff_days <= 30:
+                            queries["30d"] += 1
+                            print(f"      计入: 30天内")
+                        elif diff_days <= 90:
+                            queries["31_90d"] += 1
+                            print(f"      计入: 31-90天")
+                        elif diff_days <= 180:
+                            queries["91_180d"] += 1
+                            print(f"      计入: 91-180天")
+                        elif diff_days <= 360:
+                            queries["181_360d"] += 1
+                            print(f"      计入: 181-360天")
+                        
+                        if diff_days <= 60 and institution:
+                            is_micro = ("银行" not in institution) or any(kw in institution for kw in MICRO_KEYWORDS)
+                            if is_micro:
+                                queries["micro_60d"] += 1
+                                print(f"      小网贷: 是")
+                except Exception as e:
+                    print(f"      解析错误: {e}")
+        
+        # 处理本人查询表格
+        if is_self_table:
+            print(f"处理本人查询表格 {element_id[:8]}...")
+            for row_num, row_data in rows.items():
+                # 跳过表头行
+                row_text = " ".join(str(v) for v in row_data.values())
+                if "查询日期" in row_text or "查询机构" in row_text or "查询原因" in row_text:
+                    print(f"    跳过表头行 {row_num}")
+                    continue
+                
+                # 提取日期
+                date = row_data.get(2, "") or row_data.get(1, "")
+                
+                if not date:
+                    continue
+                
+                print(f"    行 {row_num}: 日期={date}")
+                
+                # 解析日期
+                try:
+                    date_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', date)
+                    if date_match:
+                        y, m, d = int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3))
+                        query_date = datetime(y, m, d)
+                        diff_days = (report_date - query_date).days
+                        print(f"      距今天数: {diff_days}")
+                        
+                        if 0 <= diff_days <= 60:
+                            queries["self_60d"] += 1
+                            print(f"      计入: 60天内本人查询")
+                except Exception as e:
+                    print(f"      解析错误: {e}")
     
     print(f"最终结果: 30d={queries['30d']}, 31-90d={queries['31_90d']}, 91-180d={queries['91_180d']}, 181-360d={queries['181_360d']}, micro_60d={queries['micro_60d']}, self_60d={queries['self_60d']}")
     
@@ -718,7 +775,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v4_xparse_structured"}
+    return {"status": "ok", "version": "v4_xparse_structured_fixed"}
 
 
 @app.get("/")
