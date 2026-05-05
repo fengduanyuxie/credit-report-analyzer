@@ -86,6 +86,13 @@ def parse_pdf_with_xparse(pdf_bytes: bytes) -> Dict[str, Any]:
         raise Exception(f"xParse API HTTP错误: {response.status_code} - {response.text[:200]}")
     
     result = response.json()
+    
+    print("=== xParse 原始响应（完整）===")
+    print(json.dumps(result, ensure_ascii=False))
+    print("===================================")
+    
+    if result.get("code") != 200:
+
     if result.get("code") != 200:
         raise Exception(f"xParse API 业务错误: {result.get('message', '未知错误')}")
     
