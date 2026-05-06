@@ -207,7 +207,7 @@ def extract_public_records(text: str) -> str:
 def extract_loans_from_elements(elements: List[Dict]) -> Dict[str, Any]:
     """
     从 elements 中提取贷款信息
-    策略：找到贷款相关的 Title，然后解析后续的 NarrativeText 列表
+    修复：连续解析多个 NarrativeText 元素
     """
     import re
     loans = {
@@ -218,8 +218,15 @@ def extract_loans_from_elements(elements: List[Dict]) -> Dict[str, Any]:
         "overdue_count": 0
     }
     
-    loan_titles = ["贷款", "个人住房商业贷款", "个人商用房贷款", "个人住房公积金贷款",
-                   "从未发生过逾期的账户明细如下", "发生过逾期的账户明细如下"]
+    # 贷款相关的标题关键词
+    loan_titles = [
+        "从未发生过逾期的账户明细如下",
+        "发生过逾期的账户明细如下",
+        "贷款",
+        "个人住房商业贷款",
+        "个人商用房贷款",
+        "个人住房公积金贷款"
+    ]
     
     i = 0
     while i < len(elements):
@@ -235,48 +242,64 @@ def extract_loans_from_elements(elements: List[Dict]) -> Dict[str, Any]:
                 break
         
         if is_loan_title and elem_type == "Title":
-            # 找到贷款标题，开始解析后续的 NarrativeText
+            # 找到贷款标题，开始解析后续的所有 NarrativeText
             j = i + 1
-            while j < len(elements) and elements[j].get("type") == "NarrativeText":
-                content = elements[j].get("text", "")
-                lines = content.split('\n')
-                for line in lines:
-                    line = line.strip()
-                    if not line or not re.match(r'^\d+\.', line):
-                        continue
-                    
-                    if "已结清" in line or "已转出" in line:
-                        continue
-                    
-                    balance_match = re.search(r'余额[为]?([\d,]+)', line)
-                    if not balance_match:
-                        continue
-                    balance = clean_number(balance_match.group(1))
-                    
-                    # 提取机构名
-                    inst_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日([^发放授信]+?)(?:发放|为)', line)
-                    institution = inst_match.group(1).strip() if inst_match else ''
-                    
-                    if balance > 0:
-                        loans["count"] += 1
-                        loans["balance"] += balance / 10000
-                    
-                    is_housing = any(kw in line for kw in HOUSING_KEYWORDS)
-                    is_car = any(kw in line for kw in CAR_KEYWORDS)
-                    is_micro = is_micro_institution(institution) and not is_housing and not is_car
-                    
-                    if is_housing and balance > 0:
-                        loans["housing_count"] += 1
-                        loans["housing_balance"] += balance / 10000
-                    elif is_car and balance > 0:
-                        loans["car_count"] += 1
-                        loans["car_balance"] += balance / 10000
-                    elif is_micro and balance > 0:
-                        loans["micro_count"] += 1
-                        loans["micro_balance"] += balance / 10000
-                    
-                    if "当前有逾期" in line:
-                        loans["overdue_count"] += 1
+            while j < len(elements):
+                next_elem = elements[j]
+                next_type = next_elem.get("type", "")
+                next_text = next_elem.get("text", "")
+                
+                # 如果遇到新的标题（且不是贷款相关的标题），停止解析
+                if next_type == "Title":
+                    is_next_loan = False
+                    for title in loan_titles:
+                        if title in next_text:
+                            is_next_loan = True
+                            break
+                    if not is_next_loan:
+                        break
+                
+                # 如果是 NarrativeText，解析贷款条目
+                if next_type == "NarrativeText":
+                    lines = next_text.split('\n')
+                    for line in lines:
+                        line = line.strip()
+                        if not line or not re.match(r'^\d+\.', line):
+                            continue
+                        
+                        if "已结清" in line or "已转出" in line:
+                            continue
+                        
+                        # 匹配余额（支持"余额"和"余额为"）
+                        balance_match = re.search(r'余额[为]?([\d,]+)', line)
+                        if not balance_match:
+                            continue
+                        balance = clean_number(balance_match.group(1))
+                        
+                        # 提取机构名
+                        inst_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日([^发放授信]+?)(?:发放|为)', line)
+                        institution = inst_match.group(1).strip() if inst_match else ''
+                        
+                        if balance > 0:
+                            loans["count"] += 1
+                            loans["balance"] += balance / 10000
+                        
+                        is_housing = any(kw in line for kw in HOUSING_KEYWORDS)
+                        is_car = any(kw in line for kw in CAR_KEYWORDS)
+                        is_micro = is_micro_institution(institution) and not is_housing and not is_car
+                        
+                        if is_housing and balance > 0:
+                            loans["housing_count"] += 1
+                            loans["housing_balance"] += balance / 10000
+                        elif is_car and balance > 0:
+                            loans["car_count"] += 1
+                            loans["car_balance"] += balance / 10000
+                        elif is_micro and balance > 0:
+                            loans["micro_count"] += 1
+                            loans["micro_balance"] += balance / 10000
+                        
+                        if "当前有逾期" in line:
+                            loans["overdue_count"] += 1
                 j += 1
             i = j
         else:
@@ -288,7 +311,6 @@ def extract_loans_from_elements(elements: List[Dict]) -> Dict[str, Any]:
 def extract_credits_from_elements(elements: List[Dict]) -> Dict[str, Any]:
     """
     从 elements 中提取信用卡信息
-    策略：找到信用卡相关的 Title，然后解析后续的 NarrativeText 列表
     """
     import re
     credits = {
@@ -296,27 +318,6 @@ def extract_credits_from_elements(elements: List[Dict]) -> Dict[str, Any]:
         "abnormal": {"stop_payment": 0, "frozen": 0, "doubtful": 0}
     }
     
-    credit_titles = ["信用卡", "贷记卡", "从未逾期过的贷记卡", "发生过逾期的贷记卡"]
-    
-    for element in elements:
-        elem_type = element.get("type", "")
-        text = element.get("text", "")
-        
-        # 检查是否是信用卡相关的标题
-        is_credit_title = False
-        for title in credit_titles:
-            if title in text:
-                is_credit_title = True
-                break
-        
-        if not is_credit_title or elem_type != "Title":
-            continue
-        
-        # 找到信用卡标题，在同级或下一个元素中找 NarrativeText
-        # 实际信用卡数据可能在同级的下一个元素
-        pass
-    
-    # 更简单的方法：直接扫描所有 NarrativeText 中包含"贷记卡"和"人民币"的行
     for element in elements:
         if element.get("type") != "NarrativeText":
             continue
@@ -423,7 +424,8 @@ def extract_guarantee_from_elements(elements: List[Dict]) -> Tuple[int, float]:
 
 def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -> Dict[str, int]:
     """
-    从 elements 中提取查询记录（支持跨页表格自动合并，动态识别列顺序）
+    从 elements 中提取查询记录（支持跨页表格自动合并，动态列识别）
+    修复：严格排除贷后管理，区分机构/本人查询
     """
     import re
     queries = {
@@ -435,8 +437,8 @@ def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -
     print(f"报告日期: {report_date}")
     
     # 收集所有机构查询行和本人查询行
-    inst_rows = []   # 每个元素是 (日期, 机构, 原因)
-    self_rows = []   # 每个元素是 (日期,)
+    inst_rows = []
+    self_rows = []
     
     for element in elements:
         if element.get("type") != "Table":
@@ -464,15 +466,16 @@ def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -
         
         for row_data in rows.values():
             row_text = " ".join(str(v) for v in row_data.values())
-            if "贷款审批" in row_text or "贷后管理" in row_text or "信用卡审批" in row_text:
+            if "贷款审批" in row_text or "信用卡审批" in row_text or "保前审查" in row_text:
                 is_inst_table = True
+            if "贷后管理" in row_text:
+                is_inst_table = True  # 贷后管理也属于机构查询（需要排除）
             if "本人查询" in row_text:
                 is_self_table = True
         
         # 动态识别列顺序（通过表头行）
         col_map = {"date": None, "institution": None, "reason": None}
         
-        # 找到表头行（通常第一行）
         header_row = rows.get(1, {})
         if header_row:
             for col_num, header_text in header_row.items():
@@ -483,7 +486,6 @@ def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -
                 elif "查询原因" in header_text or "原因" in header_text:
                     col_map["reason"] = col_num
         
-        # 如果没有找到标准表头，使用默认列顺序（col2=日期, col3=机构, col4=原因）
         if col_map["date"] is None:
             col_map["date"] = 2
         if col_map["institution"] is None:
@@ -494,7 +496,6 @@ def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -
         # 提取机构查询行
         if is_inst_table:
             for row_num, row_data in rows.items():
-                # 跳过表头行
                 if row_num == 1 and header_row:
                     continue
                 
@@ -521,10 +522,11 @@ def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -
     
     print(f"共收集到 {len(inst_rows)} 条机构查询记录，{len(self_rows)} 条本人查询记录")
     
-    # 统计机构查询
+    # 统计机构查询（严格排除贷后管理）
     for date, institution, reason in inst_rows:
         print(f"  机构查询: 日期={date}, 机构={institution}, 原因={reason}")
         
+        # 严格排除贷后管理
         if "贷后管理" in reason:
             print(f"    排除: 贷后管理")
             continue
@@ -674,10 +676,8 @@ async def analyze(file: UploadFile):
         raise HTTPException(400, "文件不能超过10MB")
     
     try:
-        # 1. 使用新版 xParse API 解析 PDF
         xparse_data = parse_pdf_with_xparse(pdf_bytes)
         
-        # 2. 获取 markdown 文本和 elements
         markdown_text = xparse_data.get("markdown", "")
         elements = xparse_data.get("elements", [])
         
@@ -686,26 +686,21 @@ async def analyze(file: UploadFile):
         print(f"元素数量: {len(elements)}")
         print("================================")
         
-        # 3. 提取报告日期
         report_date = extract_report_date_from_text(markdown_text)
         
-        # 4. 提取基础信息
         gender = extract_gender(markdown_text)
         age = extract_age(markdown_text, report_date)
         marriage = extract_marriage(markdown_text)
         
-        # 5. 从 elements 中提取贷款、信用卡、担保
         loans = extract_loans_from_elements(elements)
         credits = extract_credits_from_elements(elements)
         guarantee_count, guarantee_balance = extract_guarantee_from_elements(elements)
         
-        # 6. 从 markdown 中提取逾期、资产处置、垫款、公共记录
         overdue = extract_overdue(markdown_text)
         asset_count, asset_balance = extract_asset_disposal(markdown_text)
         advance_count, advance_amount = extract_advance_payment(markdown_text)
         public_records = extract_public_records(markdown_text)
         
-        # 7. 提取查询记录（从 elements 中，支持跨页合并，动态列识别）
         queries = extract_queries_from_elements(elements, report_date)
         
         risk_warning = build_risk_warning(asset_count, asset_balance, advance_count, advance_amount,
@@ -774,7 +769,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v6_final_adaptive"}
+    return {"status": "ok", "version": "v6_final_fixed"}
 
 
 @app.get("/")
@@ -850,18 +845,4 @@ analyzeBtn.addEventListener('click', async () => {
         resultDiv.innerText = data.full_report;
         resultContainer.style.display = 'block';
     } catch (err) {
-        alert('错误：' + err.message);
-    } finally {
-        loadingDiv.style.display = 'none';
-        analyzeBtn.disabled = false;
-    }
-});
-</script>
-</body>
-</html>'''
-    return HTMLResponse(content=html)
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+        alert
