@@ -810,89 +810,300 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v8_all_fixes"}
+    return {"status": "ok", "version": "v8_mobile_ui"}
 
 
 @app.get("/")
 def frontend():
     html = '''<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>征信报告分析系统</title>
-<style>
-body {font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #f5f7fa;}
-.container {background: white; border-radius: 16px; padding: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);}
-h1 {color: #1e3c72; border-bottom: 2px solid #4a90e2; padding-bottom: 10px;}
-.upload-area {border: 2px dashed #4a90e2; border-radius: 12px; padding: 40px; text-align: center; background: #fafcff; margin: 20px 0; cursor: pointer;}
-.upload-area:hover {background: #eef4ff;}
-input[type="file"] {display: none;}
-button {background: #4a90e2; color: white; border: none; padding: 12px 28px; border-radius: 40px; font-size: 16px; cursor: pointer;}
-button:hover {background: #357abd;}
-.result {background: #f9f9f9; border-radius: 12px; padding: 20px; margin-top: 20px; white-space: pre-wrap; font-family: monospace; font-size: 14px; line-height: 1.5; max-height: 600px; overflow-y: auto;}
-.loading {display: none; text-align: center; margin: 20px; color: #4a90e2;}
-</style>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes, viewport-fit=cover">
+    <title>征信报告分析系统</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: #f5f7fa;
+            padding: 16px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 24px;
+            padding: 20px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+        }
+
+        h1 {
+            color: #1e3c72;
+            border-bottom: 3px solid #4a90e2;
+            padding-bottom: 12px;
+            margin-bottom: 16px;
+            font-size: 22px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .desc {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.5;
+            margin-bottom: 20px;
+            padding: 0 4px;
+        }
+
+        .upload-area {
+            border: 2px dashed #4a90e2;
+            border-radius: 20px;
+            padding: 40px 20px;
+            text-align: center;
+            background: #fafcff;
+            margin: 16px 0;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .upload-area:hover {
+            background: #eef4ff;
+            border-color: #357abd;
+        }
+
+        .upload-area p {
+            color: #4a90e2;
+            font-size: 16px;
+        }
+
+        .upload-area .file-name {
+            color: #333;
+            font-size: 14px;
+            margin-top: 8px;
+            word-break: break-all;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        button {
+            background: #4a90e2;
+            color: white;
+            border: none;
+            padding: 14px 28px;
+            border-radius: 40px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            width: 100%;
+            transition: background 0.2s ease;
+            margin-top: 8px;
+        }
+
+        button:hover {
+            background: #357abd;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            margin: 24px 0;
+            color: #4a90e2;
+            font-size: 14px;
+        }
+
+        .loading::before {
+            content: "⏳";
+            display: inline-block;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .result-container {
+            display: none;
+            margin-top: 24px;
+        }
+
+        .result {
+            background: #f9f9f9;
+            border-radius: 16px;
+            padding: 16px;
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 500px;
+            overflow-y: auto;
+            border: 1px solid #e0e0e0;
+        }
+
+        .result::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .result::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 3px;
+        }
+
+        .result::-webkit-scrollbar-thumb {
+            background: #ccc;
+            border-radius: 3px;
+        }
+
+        .info-note {
+            background: #e8f4fd;
+            padding: 12px;
+            border-radius: 12px;
+            margin-top: 20px;
+            font-size: 12px;
+            color: #4a90e2;
+            text-align: center;
+        }
+
+        .info-note a {
+            color: #1e3c72;
+        }
+
+        .bottom-space {
+            height: 20px;
+        }
+    </style>
 </head>
 <body>
-<div class="container">
-<h1>📄 个人征信报告AI分析系统</h1>
-<p>上传PDF格式的个人信用报告，系统将自动解析并生成专业风控报告。</p>
-<div class="upload-area" onclick="document.getElementById('file').click()">
-<p>📎 点击或拖拽上传PDF文件</p>
-<input type="file" id="file" accept=".pdf">
-</div>
-<div style="text-align: center;"><button id="analyzeBtn" disabled>开始分析</button></div>
-<div class="loading" id="loading">⏳ 正在解析并分析报告，请稍候...（可能需要30-60秒）</div>
-<div id="resultContainer" style="display: none;">
-<div class="result" id="result"></div>
-</div>
-</div>
-<script>
-let selectedFile = null;
-const fileInput = document.getElementById('file');
-const uploadArea = document.querySelector('.upload-area');
-const analyzeBtn = document.getElementById('analyzeBtn');
-const loadingDiv = document.getElementById('loading');
-const resultDiv = document.getElementById('result');
-const resultContainer = document.getElementById('resultContainer');
+    <div class="container">
+        <h1>
+            <span>📄</span>
+            征信报告AI分析
+        </h1>
+        <p class="desc">上传PDF格式的个人信用报告，系统将自动解析并生成专业风控报告。</p>
 
-uploadArea.addEventListener('click', () => fileInput.click());
-uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.style.background = '#eef4ff'; });
-uploadArea.addEventListener('dragleave', () => { uploadArea.style.background = '#fafcff'; });
-uploadArea.addEventListener('drop', (e) => {
-    e.preventDefault();
-    uploadArea.style.background = '#fafcff';
-    if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
-});
+        <div class="upload-area" onclick="document.getElementById('file').click()">
+            <p>📎 点击或拖拽上传PDF文件</p>
+            <p class="file-name" id="fileName"></p>
+            <input type="file" id="file" accept=".pdf">
+        </div>
 
-fileInput.addEventListener('change', (e) => { if (e.target.files.length > 0) handleFile(e.target.files[0]); });
+        <button id="analyzeBtn" disabled>开始分析</button>
 
-function handleFile(file) {
-    if (file.type !== 'application/pdf') { alert('请上传PDF格式的文件'); return; }
-    selectedFile = file;
-    analyzeBtn.disabled = false;
-    uploadArea.querySelector('p').innerHTML = `✅ 已选择：${file.name}`;
-}
+        <div class="loading" id="loading">
+            正在解析并分析报告，请稍候...（可能需要30-60秒）
+        </div>
 
-analyzeBtn.addEventListener('click', async () => {
-    if (!selectedFile) return;
-    analyzeBtn.disabled = true;
-    loadingDiv.style.display = 'block';
-    resultContainer.style.display = 'none';
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-    try {
-        const response = await fetch('/api/analyze', { method: 'POST', body: formData });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || '分析失败');
-        resultDiv.innerText = data.full_report;
-        resultContainer.style.display = 'block';
-    } catch (err) {
-        alert('错误：' + err.message);
-    } finally {
-        loadingDiv.style.display = 'none';
-        analyzeBtn.disabled = false;
-    }
-});
-</script>
+        <div class="result-container" id="resultContainer">
+            <div class="result" id="result"></div>
+        </div>
+
+        <div class="info-note">
+            💡 提示：分析结果包含两部分 — 简要汇总 + AI展开分析
+        </div>
+        <div class="bottom-space"></div>
+    </div>
+
+    <script>
+        let selectedFile = null;
+        const fileInput = document.getElementById('file');
+        const uploadArea = document.querySelector('.upload-area');
+        const analyzeBtn = document.getElementById('analyzeBtn');
+        const loadingDiv = document.getElementById('loading');
+        const resultDiv = document.getElementById('result');
+        const resultContainer = document.getElementById('resultContainer');
+        const fileNameSpan = document.getElementById('fileName');
+
+        uploadArea.addEventListener('click', () => fileInput.click());
+
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.style.background = '#eef4ff';
+            uploadArea.style.borderColor = '#357abd';
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.style.background = '#fafcff';
+            uploadArea.style.borderColor = '#4a90e2';
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.style.background = '#fafcff';
+            uploadArea.style.borderColor = '#4a90e2';
+            if (e.dataTransfer.files.length > 0) {
+                handleFile(e.dataTransfer.files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            if (file.type !== 'application/pdf') {
+                alert('请上传PDF格式的文件');
+                return;
+            }
+            selectedFile = file;
+            analyzeBtn.disabled = false;
+            fileNameSpan.innerHTML = `✅ 已选择：${file.name}`;
+            uploadArea.querySelector('p:first-child').innerHTML = '📄 文件已就绪，点击可更换';
+        }
+
+        analyzeBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+
+            analyzeBtn.disabled = true;
+            loadingDiv.style.display = 'block';
+            resultContainer.style.display = 'none';
+            resultDiv.innerText = '';
+
+            const formData = new FormData();
+            formData.append('file', selectedFile);
+
+            try {
+                const response = await fetch('/api/analyze', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || '分析失败');
+                }
+
+                resultDiv.innerText = data.full_report;
+                resultContainer.style.display = 'block';
+
+                resultContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+            } catch (err) {
+                alert('错误：' + err.message);
+            } finally {
+                loadingDiv.style.display = 'none';
+                analyzeBtn.disabled = false;
+            }
+        });
+    </script>
 </body>
 </html>'''
     return HTMLResponse(content=html)
