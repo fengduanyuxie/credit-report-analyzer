@@ -1,3 +1,4 @@
+# main.py
 import os
 import re
 import json
@@ -36,6 +37,15 @@ MICRO_KEYWORDS = [
 HOUSING_KEYWORDS = ["个人住房", "住房贷款", "商用房", "公积金", "住房公积金"]
 CAR_KEYWORDS = ["汽车"]
 
+# 国有/股份制银行关键词（用于排除小网贷误判）
+BANK_KEYWORDS = [
+    "工商银行", "农业银行", "中国银行", "建设银行", "交通银行",
+    "招商银行", "浦发银行", "中信银行", "光大银行", "华夏银行",
+    "民生银行", "广发银行", "平安银行", "兴业银行", "浙商银行",
+    "邮储银行", "北京银行", "上海银行", "江苏银行", "宁波银行",
+    "南京银行", "杭州银行"
+]
+
 
 def clean_number(num_str: str) -> float:
     if not num_str:
@@ -48,14 +58,10 @@ def clean_number(num_str: str) -> float:
 
 
 def parse_pdf_with_xparse(pdf_bytes: bytes) -> Dict[str, Any]:
-    """
-    使用新版 xParse API 解析 PDF，返回结构化 JSON
-    """
     headers = {
         "x-ti-app-id": TEXTIN_APP_ID,
         "x-ti-secret-code": TEXTIN_SECRET_CODE,
     }
-    
     config = {
         "capabilities": {
             "include_table_structure": True,
@@ -63,10 +69,8 @@ def parse_pdf_with_xparse(pdf_bytes: bytes) -> Dict[str, Any]:
             "include_hierarchy": True
         }
     }
-    
     files = {"file": ("report.pdf", pdf_bytes, "application/pdf")}
     data = {"config": json.dumps(config)}
-    
     response = requests.post(
         XPARSE_API_URL,
         headers=headers,
@@ -74,19 +78,15 @@ def parse_pdf_with_xparse(pdf_bytes: bytes) -> Dict[str, Any]:
         data=data,
         timeout=60
     )
-    
     if response.status_code != 200:
         raise Exception(f"xParse API HTTP错误: {response.status_code}")
-    
     result = response.json()
     if result.get("code") != 200:
         raise Exception(f"xParse API 业务错误: {result.get('message', '未知错误')}")
-    
     return result.get("data", {})
 
 
 def extract_gender(text: str) -> str:
-    import re
     match = re.search(r'证件号码[：:]\s*(\d{17}[\dXx])', text)
     if match:
         id_num = match.group(1)
@@ -96,7 +96,6 @@ def extract_gender(text: str) -> str:
 
 
 def extract_age(text: str, report_date: datetime) -> int:
-    import re
     id_match = re.search(r'证件号码[：:]\s*(\d{17}[\dXx])', text)
     if id_match:
         id_num = id_match.group(1)
@@ -123,7 +122,6 @@ def extract_marriage(text: str) -> str:
 
 
 def extract_report_date_from_text(text: str) -> datetime:
-    import re
     match = re.search(r'报告时间[：:]\s*(\d{4})-(\d{2})-(\d{2})', text)
     if match:
         return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
@@ -131,16 +129,21 @@ def extract_report_date_from_text(text: str) -> datetime:
 
 
 def is_micro_institution(institution_name: str) -> bool:
+    # 优先匹配已知小贷关键词
     for kw in MICRO_KEYWORDS:
         if kw in institution_name:
             return True
+    # 如果包含银行关键词，不算小网贷
+    for bk in BANK_KEYWORDS:
+        if bk in institution_name:
+            return False
+    # 不含"银行"的非银行机构，算小网贷
     if "银行" not in institution_name:
         return True
     return False
 
 
 def extract_asset_disposal(text: str) -> Tuple[int, float]:
-    import re
     count = 0
     balance = 0.0
     match = re.search(r'## 资产处置信息.*?余额为([\d,]+)', text, re.DOTALL)
@@ -151,7 +154,6 @@ def extract_asset_disposal(text: str) -> Tuple[int, float]:
 
 
 def extract_advance_payment(text: str) -> Tuple[int, float]:
-    import re
     count = 0
     amount = 0.0
     match = re.search(r'## 垫款信息.*?累计代偿金额([\d,]+)', text, re.DOTALL)
@@ -162,54 +164,43 @@ def extract_advance_payment(text: str) -> Tuple[int, float]:
 
 
 def extract_overdue(text: str) -> Dict[str, int]:
-    import re
     overdue = {"total_months": 0, "90d_count": 0}
     month_pattern = r'最近5年内有(\d+)个月处于逾期状态'
     months = re.findall(month_pattern, text)
     overdue["total_months"] = sum(int(m) for m in months)
-    
     overdue_90_pattern = r'其中(\d+)个月逾期超过90天'
     matches = re.findall(overdue_90_pattern, text)
     for match in matches:
         if int(match) > 0:
             overdue["90d_count"] += 1
-    
     return overdue
 
 
 def extract_public_records(text: str) -> str:
-    import re
     records = []
-    
     tax_match = re.search(r'## 欠税记录.*?欠税总额：([\d,]+)', text, re.DOTALL)
     if tax_match:
         amount = clean_number(tax_match.group(1))
         records.append(f"欠税1条，金额{amount/10000:.2f}万元")
-    
     judgment_matches = re.findall(r'## 民事判决记录.*?诉讼标的金额：([\d,]+)', text, re.DOTALL)
     if judgment_matches:
         total = sum(clean_number(j) for j in judgment_matches)
         records.append(f"民事判决{len(judgment_matches)}件，金额{total/10000:.2f}万元")
-    
     enforcement_matches = re.findall(r'## 强制执行记录.*?申请执行标的金额：([\d,]+)', text, re.DOTALL)
     if enforcement_matches:
         total = sum(clean_number(e) for e in enforcement_matches)
         records.append(f"强制执行{len(enforcement_matches)}件，金额{total/10000:.2f}万元")
-    
     penalty_match = re.search(r'## 行政处罚记录.*?处罚金额：([\d,]+)', text, re.DOTALL)
     if penalty_match:
         amount = clean_number(penalty_match.group(1))
         records.append(f"行政处罚1条，金额{amount/10000:.2f}万元")
-    
     return "\n".join(records) if records else "无"
 
 
 def extract_loans_from_elements(elements: List[Dict]) -> Dict[str, Any]:
     """
-    从 elements 中提取贷款信息
-    修复：连续解析多个 NarrativeText 元素
+    内容特征解析：直接扫描所有 NarrativeText，通过内容模式识别贷款
     """
-    import re
     loans = {
         "count": 0, "balance": 0.0,
         "housing_count": 0, "housing_balance": 0.0,
@@ -218,122 +209,109 @@ def extract_loans_from_elements(elements: List[Dict]) -> Dict[str, Any]:
         "overdue_count": 0
     }
     
-    # 贷款相关的标题关键词
-    loan_titles = [
-        "从未发生过逾期的账户明细如下",
-        "发生过逾期的账户明细如下",
-        "贷款",
-        "个人住房商业贷款",
-        "个人商用房贷款",
-        "个人住房公积金贷款"
-    ]
+    seen_ids = set()  # 去重
     
-    i = 0
-    while i < len(elements):
-        elem = elements[i]
-        elem_type = elem.get("type", "")
-        text = elem.get("text", "")
+    for element in elements:
+        elem_type = element.get("type", "")
+        elem_id = element.get("element_id", "")
         
-        # 检查是否是贷款相关的标题
-        is_loan_title = False
-        for title in loan_titles:
-            if title in text:
-                is_loan_title = True
-                break
+        if elem_type != "NarrativeText":
+            continue
         
-        if is_loan_title and elem_type == "Title":
-            # 找到贷款标题，开始解析后续的所有 NarrativeText
-            j = i + 1
-            while j < len(elements):
-                next_elem = elements[j]
-                next_type = next_elem.get("type", "")
-                next_text = next_elem.get("text", "")
-                
-                # 如果遇到新的标题（且不是贷款相关的标题），停止解析
-                if next_type == "Title":
-                    is_next_loan = False
-                    for title in loan_titles:
-                        if title in next_text:
-                            is_next_loan = True
-                            break
-                    if not is_next_loan:
-                        break
-                
-                # 如果是 NarrativeText，解析贷款条目
-                if next_type == "NarrativeText":
-                    lines = next_text.split('\n')
-                    for line in lines:
-                        line = line.strip()
-                        if not line or not re.match(r'^\d+\.', line):
-                            continue
-                        
-                        if "已结清" in line or "已转出" in line:
-                            continue
-                        
-                        # 匹配余额（支持"余额"和"余额为"）
-                        balance_match = re.search(r'余额[为]?([\d,]+)', line)
-                        if not balance_match:
-                            continue
-                        balance = clean_number(balance_match.group(1))
-                        
-                        # 提取机构名
-                        inst_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日([^发放授信]+?)(?:发放|为)', line)
-                        institution = inst_match.group(1).strip() if inst_match else ''
-                        
-                        if balance > 0:
-                            loans["count"] += 1
-                            loans["balance"] += balance / 10000
-                        
-                        is_housing = any(kw in line for kw in HOUSING_KEYWORDS)
-                        is_car = any(kw in line for kw in CAR_KEYWORDS)
-                        is_micro = is_micro_institution(institution) and not is_housing and not is_car
-                        
-                        if is_housing and balance > 0:
-                            loans["housing_count"] += 1
-                            loans["housing_balance"] += balance / 10000
-                        elif is_car and balance > 0:
-                            loans["car_count"] += 1
-                            loans["car_balance"] += balance / 10000
-                        elif is_micro and balance > 0:
-                            loans["micro_count"] += 1
-                            loans["micro_balance"] += balance / 10000
-                        
-                        if "当前有逾期" in line:
-                            loans["overdue_count"] += 1
-                j += 1
-            i = j
-        else:
-            i += 1
+        if elem_id in seen_ids:
+            continue
+        seen_ids.add(elem_id)
+        
+        text = element.get("text", "")
+        lines = text.split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            # 必须是序号开头的行
+            if not re.match(r'^\d+\.', line):
+                continue
+            
+            # 必须包含"发放"或"授信"
+            if "发放" not in line and "授信" not in line:
+                continue
+            
+            # 排除已结清、已转出、销户
+            if "已结清" in line or "已转出" in line or "销户" in line:
+                continue
+            
+            # 提取余额（支持"余额"和"余额为"）
+            balance_match = re.search(r'余额[为]?([\d,]+)', line)
+            if not balance_match:
+                continue
+            balance = clean_number(balance_match.group(1))
+            
+            # 提取机构名
+            inst_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日([^发放授信]+?)(?:发放|为)', line)
+            institution = inst_match.group(1).strip() if inst_match else ''
+            
+            if balance > 0:
+                loans["count"] += 1
+                loans["balance"] += balance / 10000
+            
+            # 分类
+            is_housing = any(kw in line for kw in HOUSING_KEYWORDS)
+            is_car = any(kw in line for kw in CAR_KEYWORDS)
+            is_micro = is_micro_institution(institution) and not is_housing and not is_car
+            
+            if is_housing and balance > 0:
+                loans["housing_count"] += 1
+                loans["housing_balance"] += balance / 10000
+            elif is_car and balance > 0:
+                loans["car_count"] += 1
+                loans["car_balance"] += balance / 10000
+            elif is_micro and balance > 0:
+                loans["micro_count"] += 1
+                loans["micro_balance"] += balance / 10000
+            
+            if "当前有逾期" in line:
+                loans["overdue_count"] += 1
     
     return loans
 
 
 def extract_credits_from_elements(elements: List[Dict]) -> Dict[str, Any]:
     """
-    从 elements 中提取信用卡信息
+    内容特征解析：直接扫描所有 NarrativeText，通过内容模式识别信用卡
     """
-    import re
     credits = {
         "count": 0, "limit": 0.0, "used": 0.0, "overdue": 0,
         "abnormal": {"stop_payment": 0, "frozen": 0, "doubtful": 0}
     }
     
+    seen_ids = set()
+    
     for element in elements:
-        if element.get("type") != "NarrativeText":
+        elem_type = element.get("type", "")
+        elem_id = element.get("element_id", "")
+        
+        if elem_type != "NarrativeText":
             continue
+        
+        if elem_id in seen_ids:
+            continue
+        seen_ids.add(elem_id)
         
         text = element.get("text", "")
         lines = text.split('\n')
+        
         for line in lines:
             line = line.strip()
             if not line or not re.match(r'^\d+\.', line):
                 continue
             
+            # 必须包含"贷记卡"和"人民币"
             if '贷记卡' not in line or '人民币' not in line:
                 continue
             if '美元' in line:
                 continue
-            if '销户' in line or '尚未激活' in line:
+            if '尚未激活' in line:
+                continue
+            if '销户' in line:
                 continue
             
             limit_match = re.search(r'信用额度([\d,]+)', line)
@@ -375,10 +353,6 @@ def extract_credits_from_elements(elements: List[Dict]) -> Dict[str, Any]:
 
 
 def extract_guarantee_from_elements(elements: List[Dict]) -> Tuple[int, float]:
-    """
-    从 elements 中提取担保信息（支持多表格合并）
-    """
-    import re
     count = 0
     balance = 0.0
     
@@ -388,11 +362,9 @@ def extract_guarantee_from_elements(elements: List[Dict]) -> Tuple[int, float]:
         
         table_structure = element.get("table_structure", {})
         cells = table_structure.get("cells", [])
-        
         if not cells:
             continue
         
-        # 按行重组
         rows = {}
         for cell in cells:
             row_num = cell.get("row", 0)
@@ -423,20 +395,11 @@ def extract_guarantee_from_elements(elements: List[Dict]) -> Tuple[int, float]:
 
 
 def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -> Dict[str, int]:
-    """
-    从 elements 中提取查询记录（支持跨页表格自动合并，动态列识别）
-    修复：严格排除贷后管理，区分机构/本人查询
-    """
-    import re
     queries = {
         "30d": 0, "31_90d": 0, "91_180d": 0, "181_360d": 0,
         "micro_60d": 0, "self_60d": 0
     }
     
-    print("=== 查询提取调试（动态列识别版）===")
-    print(f"报告日期: {report_date}")
-    
-    # 收集所有机构查询行和本人查询行
     inst_rows = []
     self_rows = []
     
@@ -446,11 +409,9 @@ def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -
         
         table_structure = element.get("table_structure", {})
         cells = table_structure.get("cells", [])
-        
         if not cells:
             continue
         
-        # 按行重组
         rows = {}
         for cell in cells:
             row_num = cell.get("row", 0)
@@ -460,22 +421,17 @@ def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -
                 rows[row_num] = {}
             rows[row_num][col_num] = cell_text
         
-        # 判断表格类型
         is_inst_table = False
         is_self_table = False
         
         for row_data in rows.values():
             row_text = " ".join(str(v) for v in row_data.values())
-            if "贷款审批" in row_text or "信用卡审批" in row_text or "保前审查" in row_text:
+            if "贷款审批" in row_text or "贷后管理" in row_text or "信用卡审批" in row_text:
                 is_inst_table = True
-            if "贷后管理" in row_text:
-                is_inst_table = True  # 贷后管理也属于机构查询（需要排除）
             if "本人查询" in row_text:
                 is_self_table = True
         
-        # 动态识别列顺序（通过表头行）
         col_map = {"date": None, "institution": None, "reason": None}
-        
         header_row = rows.get(1, {})
         if header_row:
             for col_num, header_text in header_row.items():
@@ -493,56 +449,38 @@ def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -
         if col_map["reason"] is None:
             col_map["reason"] = 4
         
-        # 提取机构查询行
         if is_inst_table:
             for row_num, row_data in rows.items():
                 if row_num == 1 and header_row:
                     continue
-                
                 date = row_data.get(col_map["date"], "")
                 institution = row_data.get(col_map["institution"], "")
                 reason = row_data.get(col_map["reason"], "")
-                
                 if not date or not reason:
                     continue
-                
                 inst_rows.append((date, institution, reason))
         
-        # 提取本人查询行
         if is_self_table:
             for row_num, row_data in rows.items():
                 if row_num == 1 and header_row:
                     continue
-                
                 date = row_data.get(col_map["date"], "")
                 if not date:
                     continue
-                
                 self_rows.append(date)
     
-    print(f"共收集到 {len(inst_rows)} 条机构查询记录，{len(self_rows)} 条本人查询记录")
-    
-    # 统计机构查询（严格排除贷后管理）
+    # 统计机构查询
     for date, institution, reason in inst_rows:
-        print(f"  机构查询: 日期={date}, 机构={institution}, 原因={reason}")
-        
-        # 严格排除贷后管理
         if "贷后管理" in reason:
-            print(f"    排除: 贷后管理")
             continue
-        
         try:
             date_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', date)
             if date_match:
                 y, m, d = int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3))
                 query_date = datetime(y, m, d)
                 diff_days = (report_date - query_date).days
-                print(f"    距今天数: {diff_days}")
-                
                 if diff_days > 360:
-                    print(f"    排除: 超过360天")
                     continue
-                
                 if diff_days <= 30:
                     queries["30d"] += 1
                 elif diff_days <= 90:
@@ -551,31 +489,24 @@ def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -
                     queries["91_180d"] += 1
                 elif diff_days <= 360:
                     queries["181_360d"] += 1
-                
                 if diff_days <= 60 and institution:
-                    is_micro = ("银行" not in institution) or any(kw in institution for kw in MICRO_KEYWORDS)
-                    if is_micro:
+                    if is_micro_institution(institution):
                         queries["micro_60d"] += 1
-                        print(f"      小网贷: 是")
-        except Exception as e:
-            print(f"    解析错误: {e}")
+        except:
+            pass
     
     # 统计本人查询
     for date in self_rows:
-        print(f"  本人查询: 日期={date}")
         try:
             date_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', date)
             if date_match:
                 y, m, d = int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3))
                 query_date = datetime(y, m, d)
                 diff_days = (report_date - query_date).days
-                print(f"    距今天数: {diff_days}")
                 if 0 <= diff_days <= 60:
                     queries["self_60d"] += 1
-        except Exception as e:
-            print(f"    解析错误: {e}")
-    
-    print(f"最终结果: 30d={queries['30d']}, 31-90d={queries['31_90d']}, 91-180d={queries['91_180d']}, 181-360d={queries['181_360d']}, micro_60d={queries['micro_60d']}, self_60d={queries['self_60d']}")
+        except:
+            pass
     
     return queries
 
@@ -677,17 +608,12 @@ async def analyze(file: UploadFile):
     
     try:
         xparse_data = parse_pdf_with_xparse(pdf_bytes)
-        
         markdown_text = xparse_data.get("markdown", "")
         elements = xparse_data.get("elements", [])
         
-        print("=== xParse 解析结果（结构化）===")
-        print(f"成功页数: {xparse_data.get('success_count', 0)}")
-        print(f"元素数量: {len(elements)}")
-        print("================================")
+        print(f"xParse 解析成功，页数: {xparse_data.get('success_count', 0)}，元素数: {len(elements)}")
         
         report_date = extract_report_date_from_text(markdown_text)
-        
         gender = extract_gender(markdown_text)
         age = extract_age(markdown_text, report_date)
         marriage = extract_marriage(markdown_text)
@@ -769,7 +695,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v6_final_fixed"}
+    return {"status": "ok", "version": "v7_content_based"}
 
 
 @app.get("/")
@@ -845,4 +771,18 @@ analyzeBtn.addEventListener('click', async () => {
         resultDiv.innerText = data.full_report;
         resultContainer.style.display = 'block';
     } catch (err) {
-        alert
+        alert('错误：' + err.message);
+    } finally {
+        loadingDiv.style.display = 'none';
+        analyzeBtn.disabled = false;
+    }
+});
+</script>
+</body>
+</html>'''
+    return HTMLResponse(content=html)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080)
