@@ -129,15 +129,12 @@ def extract_report_date_from_text(text: str) -> datetime:
 
 
 def is_micro_institution(institution_name: str) -> bool:
-    # 优先匹配已知小贷关键词
     for kw in MICRO_KEYWORDS:
         if kw in institution_name:
             return True
-    # 如果包含银行关键词，不算小网贷
     for bk in BANK_KEYWORDS:
         if bk in institution_name:
             return False
-    # 不含"银行"的非银行机构，算小网贷
     if "银行" not in institution_name:
         return True
     return False
@@ -177,12 +174,8 @@ def extract_overdue(text: str) -> Dict[str, int]:
 
 
 def extract_public_records(elements: List[Dict]) -> str:
-    """
-    从 elements 中提取公共记录（支持跨页表格）
-    """
     records = []
     
-    # 欠税记录（markdown）
     for element in elements:
         text = element.get("text", "")
         if "欠税总额" in text:
@@ -192,7 +185,6 @@ def extract_public_records(elements: List[Dict]) -> str:
                 records.append(f"欠税1条，金额{amount/10000:.2f}万元")
                 break
     
-    # 民事判决记录（支持跨页表格）
     judgment_total = 0
     judgment_count = 0
     in_judgment = False
@@ -219,7 +211,6 @@ def extract_public_records(elements: List[Dict]) -> str:
     if judgment_count > 0:
         records.append(f"民事判决{judgment_count}件，金额{judgment_total/10000:.2f}万元")
     
-    # 强制执行记录（支持跨页表格）
     enforcement_total = 0
     enforcement_count = 0
     in_enforcement = False
@@ -236,7 +227,6 @@ def extract_public_records(elements: List[Dict]) -> str:
             cells = table_structure.get("cells", [])
             for cell in cells:
                 cell_text = cell.get("text", "")
-                # 优先取"申请执行标的金额"
                 match = re.search(r'申请执行标的金额[：:]\s*([\d,]+)', cell_text)
                 if match:
                     enforcement_total += clean_number(match.group(1))
@@ -247,7 +237,6 @@ def extract_public_records(elements: List[Dict]) -> str:
     if enforcement_count > 0:
         records.append(f"强制执行{enforcement_count}件，金额{enforcement_total/10000:.2f}万元")
     
-    # 行政处罚记录
     for element in elements:
         text = element.get("text", "")
         if "处罚金额" in text:
@@ -257,14 +246,10 @@ def extract_public_records(elements: List[Dict]) -> str:
                 records.append(f"行政处罚1条，金额{amount/10000:.2f}万元")
                 break
     
-    return "\n".join(records) if records else "无"
+    return "\n".join(records) if records else ""
 
 
 def extract_loans_from_elements(elements: List[Dict]) -> Dict[str, Any]:
-    """
-    内容特征解析：直接扫描所有 NarrativeText，通过内容模式识别贷款
-    修正：已结清账户严格排除
-    """
     loans = {
         "count": 0, "balance": 0.0,
         "housing_count": 0, "housing_balance": 0.0,
@@ -291,34 +276,26 @@ def extract_loans_from_elements(elements: List[Dict]) -> Dict[str, Any]:
         
         for line in lines:
             line = line.strip()
-            # 必须是序号开头的行
             if not re.match(r'^\d+\.', line):
                 continue
             
-            # 必须包含"发放"或"授信"
             if "发放" not in line and "授信" not in line:
                 continue
             
-            # 【修复1】更严格的已结清检测（支持换行和空格）
             if re.search(r'已\s*结\s*清', line) or "已转出" in line or "销户" in line:
                 continue
             
-            # 提取余额（支持"余额"和"余额为"）
             balance_match = re.search(r'余额[为]?([\d,]+)', line)
             balance = clean_number(balance_match.group(1)) if balance_match else 0
             
-            # 提取机构名
             inst_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日([^发放授信]+?)(?:发放|为)', line)
             institution = inst_match.group(1).strip() if inst_match else ''
             
-            # 只要是未结清的贷款/授信账户，都计入机构数
             loans["count"] += 1
             
-            # 只有余额>0时才累加余额
             if balance > 0:
                 loans["balance"] += balance / 10000
             
-            # 分类
             is_housing = any(kw in line for kw in HOUSING_KEYWORDS)
             is_car = any(kw in line for kw in CAR_KEYWORDS)
             is_micro = is_micro_institution(institution) and not is_housing and not is_car
@@ -343,9 +320,6 @@ def extract_loans_from_elements(elements: List[Dict]) -> Dict[str, Any]:
 
 
 def extract_credits_from_elements(elements: List[Dict]) -> Dict[str, Any]:
-    """
-    内容特征解析：直接扫描所有 NarrativeText，通过内容模式识别信用卡
-    """
     credits = {
         "count": 0, "limit": 0.0, "used": 0.0, "overdue": 0,
         "abnormal": {"stop_payment": 0, "frozen": 0, "doubtful": 0}
@@ -372,7 +346,6 @@ def extract_credits_from_elements(elements: List[Dict]) -> Dict[str, Any]:
             if not line or not re.match(r'^\d+\.', line):
                 continue
             
-            # 必须包含"贷记卡"和"人民币"
             if '贷记卡' not in line or '人民币' not in line:
                 continue
             if '美元' in line:
@@ -421,13 +394,9 @@ def extract_credits_from_elements(elements: List[Dict]) -> Dict[str, Any]:
 
 
 def extract_guarantee_from_elements(elements: List[Dict]) -> Tuple[int, float]:
-    """
-    从 elements 中提取担保信息（支持表格和段落文本）
-    """
     count = 0
     balance = 0.0
     
-    # 方法1：从表格中提取
     for element in elements:
         if element.get("type") != "Table":
             continue
@@ -463,17 +432,14 @@ def extract_guarantee_from_elements(elements: List[Dict]) -> Tuple[int, float]:
                 else:
                     balance += amount / 10000
     
-    # 方法2：从段落文本中提取（企业担保）
     for element in elements:
         if element.get("type") != "NarrativeText":
             continue
         
         text = element.get("text", "")
-        # 匹配担保信息模式
         if "承担相关还款责任" not in text:
             continue
         
-        # 提取金额
         amount_match = re.search(r'相关还款责任金额\s*([\d,]+)', text)
         if not amount_match:
             amount_match = re.search(r'相关还款责任金额\s*--', text)
@@ -484,7 +450,6 @@ def extract_guarantee_from_elements(elements: List[Dict]) -> Tuple[int, float]:
             count += 1
             amount = clean_number(amount_match.group(1))
             
-            # 提取余额
             balance_match = re.search(r'贷款余额\s*([\d,]+)', text)
             if balance_match:
                 loan_balance = clean_number(balance_match.group(1))
@@ -497,10 +462,6 @@ def extract_guarantee_from_elements(elements: List[Dict]) -> Tuple[int, float]:
 
 
 def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -> Dict[str, int]:
-    """
-    从 elements 中提取查询记录（支持跨页表格自动合并，动态识别列顺序）
-    修复：识别"法人代表、负责人、高管等资信审查"等非标准查询原因
-    """
     queries = {
         "30d": 0, "31_90d": 0, "91_180d": 0, "181_360d": 0,
         "micro_60d": 0, "self_60d": 0
@@ -527,13 +488,11 @@ def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -
                 rows[row_num] = {}
             rows[row_num][col_num] = cell_text
         
-        # 判断表格类型
         is_inst_table = False
         is_self_table = False
         
         for row_data in rows.values():
             row_text = " ".join(str(v) for v in row_data.values())
-            # 【修复3】扩展机构查询识别：包含这些关键词的视为机构查询表
             if ("贷款审批" in row_text or "信用卡审批" in row_text or 
                 "贷后管理" in row_text or "资信审查" in row_text or
                 "担保资格审查" in row_text or "保前审查" in row_text):
@@ -541,7 +500,6 @@ def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -
             if "本人查询" in row_text:
                 is_self_table = True
         
-        # 动态识别列顺序
         col_map = {"date": None, "institution": None, "reason": None}
         header_row = rows.get(1, {})
         if header_row:
@@ -580,9 +538,7 @@ def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -
                     continue
                 self_rows.append(date)
     
-    # 统计机构查询
     for date, institution, reason in inst_rows:
-        # 排除贷后管理
         if "贷后管理" in reason:
             continue
         
@@ -608,7 +564,6 @@ def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -
         except:
             pass
     
-    # 统计本人查询
     for date in self_rows:
         try:
             date_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', date)
@@ -638,11 +593,10 @@ def build_risk_warning(asset_count: int, asset_balance: float,
         warnings.append(f"信用卡当逾{credits['overdue']}个")
     if credits.get("abnormal_display"):
         warnings.append(credits["abnormal_display"])
-    if public_records != "无":
-        # 移除换行符，用分号连接
+    if public_records:
         records_str = public_records.replace("\n", "；")
         warnings.append(records_str)
-    return "；".join(warnings) if warnings else "无"
+    return "；".join(warnings) if warnings else ""
 
 
 def build_llm_prompt(stats: Dict[str, Any]) -> str:
@@ -752,50 +706,72 @@ async def analyze(file: UploadFile):
             "queries": queries, "loans": loans, "credits": credits, "overdue": overdue
         }
         
-        part1 = f"""### 第一部分：简要汇总
-
-*基本信息
-性别：{gender}
-年龄：{age}
-婚姻：{marriage}
-风险预警：{risk_warning}
-
-*查询记录
-机构
-30天内：{queries['30d']}
-31-90天：{queries['31_90d']}
-90-180天：{queries['91_180d']}
-180-360天：{queries['181_360d']}
-60天内小网贷：{queries['micro_60d']}
-本人
-60天内本人：{queries['self_60d']}
-
-*5年内逾期
-总月数：{overdue['total_months']}
-90天以上的账户数：{overdue['90d_count']}
-
-*贷款
-机构数：{loans['count']}
-总余额：{round(loans['balance'], 2)}万元
-房贷数：{loans['housing_count']}
-房贷余额：{round(loans['housing_balance'], 2)}万元
-车贷数：{loans['car_count']}
-车贷余额：{round(loans['car_balance'], 2)}万元
-小网贷的机构数：{loans['micro_count']}
-小网贷的余额：{round(loans['micro_balance'], 2)}万元
-
-*信用卡
-机构数：{credits['count']}
-授信额：{round(credits['limit'], 2)}万元
-已用额度：{round(credits['used'], 2)}万元
-使用率：{credits['usage_rate']}%
-
-*担保信息
-担保户数：{guarantee_count}
-担保余额：{round(guarantee_balance, 2)}万元
-
-*公共记录
-{public_records}"""
+        # ========== 动态构建第一部分（隐藏0值项） ==========
+        part1_lines = []
+        part1_lines.append("### 第一部分：简要汇总\n")
+        
+        # 基本信息
+        part1_lines.append("*基本信息")
+        part1_lines.append(f"性别：{gender}")
+        part1_lines.append(f"年龄：{age}")
+        part1_lines.append(f"婚姻：{marriage}")
+        if risk_warning:
+            part1_lines.append(f"风险预警：{risk_warning}")
+        part1_lines.append("")
+        
+        # 查询记录
+        part1_lines.append("*查询记录")
+        part1_lines.append("机构")
+        part1_lines.append(f"30天内：{queries['30d']}")
+        part1_lines.append(f"31-90天：{queries['31_90d']}")
+        part1_lines.append(f"90-180天：{queries['91_180d']}")
+        part1_lines.append(f"180-360天：{queries['181_360d']}")
+        part1_lines.append(f"60天内小网贷：{queries['micro_60d']}")
+        part1_lines.append("本人")
+        part1_lines.append(f"60天内本人：{queries['self_60d']}")
+        part1_lines.append("")
+        
+        # 5年内逾期
+        part1_lines.append("*5年内逾期")
+        part1_lines.append(f"总月数：{overdue['total_months']}")
+        part1_lines.append(f"90天以上的账户数：{overdue['90d_count']}")
+        part1_lines.append("")
+        
+        # 贷款
+        part1_lines.append("*贷款")
+        part1_lines.append(f"机构数：{loans['count']}")
+        part1_lines.append(f"总余额：{round(loans['balance'], 2)}万元")
+        part1_lines.append(f"房贷数：{loans['housing_count']}")
+        if loans['housing_count'] > 0:
+            part1_lines.append(f"房贷余额：{round(loans['housing_balance'], 2)}万元")
+        if loans['car_count'] > 0:
+            part1_lines.append(f"车贷数：{loans['car_count']}")
+            part1_lines.append(f"车贷余额：{round(loans['car_balance'], 2)}万元")
+        part1_lines.append(f"小网贷的机构数：{loans['micro_count']}")
+        part1_lines.append(f"小网贷的余额：{round(loans['micro_balance'], 2)}万元")
+        part1_lines.append("")
+        
+        # 信用卡
+        part1_lines.append("*信用卡")
+        part1_lines.append(f"机构数：{credits['count']}")
+        part1_lines.append(f"授信额：{round(credits['limit'], 2)}万元")
+        part1_lines.append(f"已用额度：{round(credits['used'], 2)}万元")
+        part1_lines.append(f"使用率：{credits['usage_rate']}%")
+        part1_lines.append("")
+        
+        # 担保信息（仅当有数据时显示）
+        if guarantee_count > 0 or guarantee_balance > 0:
+            part1_lines.append("*担保信息")
+            part1_lines.append(f"担保户数：{guarantee_count}")
+            part1_lines.append(f"担保余额：{round(guarantee_balance, 2)}万元")
+            part1_lines.append("")
+        
+        # 公共记录（仅当有记录时显示）
+        if public_records:
+            part1_lines.append("*公共记录")
+            part1_lines.append(public_records)
+        
+        part1 = "\n".join(part1_lines)
         
         llm_prompt = build_llm_prompt(stats)
         part2 = call_deepseek(llm_prompt)
@@ -810,7 +786,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v8_mobile_ui"}
+    return {"status": "ok", "version": "v8_final_clean"}
 
 
 @app.get("/")
@@ -879,16 +855,21 @@ def frontend():
             border-color: #357abd;
         }
 
-        .upload-area p {
+        .upload-area .upload-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+
+        .upload-area .upload-text {
             color: #4a90e2;
             font-size: 16px;
         }
 
         .upload-area .file-name {
-            color: #333;
+            color: #2e7d32;
             font-size: 14px;
             margin-top: 8px;
-            word-break: break-all;
+            font-weight: 500;
         }
 
         input[type="file"] {
@@ -981,10 +962,6 @@ def frontend():
             text-align: center;
         }
 
-        .info-note a {
-            color: #1e3c72;
-        }
-
         .bottom-space {
             height: 20px;
         }
@@ -998,10 +975,11 @@ def frontend():
         </h1>
         <p class="desc">上传PDF格式的个人信用报告，系统将自动解析并生成专业风控报告。</p>
 
-        <div class="upload-area" onclick="document.getElementById('file').click()">
-            <p>📎 点击或拖拽上传PDF文件</p>
-            <p class="file-name" id="fileName"></p>
-            <input type="file" id="file" accept=".pdf">
+        <div class="upload-area" id="uploadArea">
+            <div class="upload-icon">📎</div>
+            <div class="upload-text">点击或拖拽上传PDF文件</div>
+            <div class="file-name" id="fileName"></div>
+            <input type="file" id="fileInput" accept=".pdf">
         </div>
 
         <button id="analyzeBtn" disabled>开始分析</button>
@@ -1021,16 +999,55 @@ def frontend():
     </div>
 
     <script>
-        let selectedFile = null;
-        const fileInput = document.getElementById('file');
-        const uploadArea = document.querySelector('.upload-area');
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
         const analyzeBtn = document.getElementById('analyzeBtn');
         const loadingDiv = document.getElementById('loading');
         const resultDiv = document.getElementById('result');
         const resultContainer = document.getElementById('resultContainer');
         const fileNameSpan = document.getElementById('fileName');
 
-        uploadArea.addEventListener('click', () => fileInput.click());
+        let selectedFile = null;
+
+        function resetUploadDisplay() {
+            const uploadIcon = uploadArea.querySelector('.upload-icon');
+            const uploadText = uploadArea.querySelector('.upload-text');
+            uploadIcon.innerHTML = '📎';
+            uploadText.innerHTML = '点击或拖拽上传PDF文件';
+            fileNameSpan.innerHTML = '';
+        }
+
+        function showFileSelected(fileName) {
+            const uploadIcon = uploadArea.querySelector('.upload-icon');
+            const uploadText = uploadArea.querySelector('.upload-text');
+            uploadIcon.innerHTML = '✅';
+            uploadText.innerHTML = '文件已就绪';
+            fileNameSpan.innerHTML = fileName;
+        }
+
+        function handleFile(file) {
+            if (!file || file.type !== 'application/pdf') {
+                alert('请上传PDF格式的文件');
+                resetUploadDisplay();
+                selectedFile = null;
+                analyzeBtn.disabled = true;
+                return;
+            }
+            selectedFile = file;
+            analyzeBtn.disabled = false;
+            showFileSelected(file.name);
+        }
+
+        uploadArea.addEventListener('click', (e) => {
+            e.stopPropagation();
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
 
         uploadArea.addEventListener('dragover', (e) => {
             e.preventDefault();
@@ -1038,7 +1055,8 @@ def frontend():
             uploadArea.style.borderColor = '#357abd';
         });
 
-        uploadArea.addEventListener('dragleave', () => {
+        uploadArea.addEventListener('dragleave', (e) => {
+            e.preventDefault();
             uploadArea.style.background = '#fafcff';
             uploadArea.style.borderColor = '#4a90e2';
         });
@@ -1051,23 +1069,6 @@ def frontend():
                 handleFile(e.dataTransfer.files[0]);
             }
         });
-
-        fileInput.addEventListener('change', (e) => {
-            if (e.target.files.length > 0) {
-                handleFile(e.target.files[0]);
-            }
-        });
-
-        function handleFile(file) {
-            if (file.type !== 'application/pdf') {
-                alert('请上传PDF格式的文件');
-                return;
-            }
-            selectedFile = file;
-            analyzeBtn.disabled = false;
-            fileNameSpan.innerHTML = `✅ 已选择：${file.name}`;
-            uploadArea.querySelector('p:first-child').innerHTML = '📄 文件已就绪，点击可更换';
-        }
 
         analyzeBtn.addEventListener('click', async () => {
             if (!selectedFile) return;
@@ -1093,7 +1094,6 @@ def frontend():
 
                 resultDiv.innerText = data.full_report;
                 resultContainer.style.display = 'block';
-
                 resultContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
             } catch (err) {
