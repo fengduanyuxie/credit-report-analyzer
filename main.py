@@ -200,6 +200,7 @@ def extract_public_records(text: str) -> str:
 def extract_loans_from_elements(elements: List[Dict]) -> Dict[str, Any]:
     """
     内容特征解析：直接扫描所有 NarrativeText，通过内容模式识别贷款
+    修正：余额为0但未结清的授信账户，计入机构数但不计入余额
     """
     loans = {
         "count": 0, "balance": 0.0,
@@ -209,7 +210,7 @@ def extract_loans_from_elements(elements: List[Dict]) -> Dict[str, Any]:
         "overdue_count": 0
     }
     
-    seen_ids = set()  # 去重
+    seen_ids = set()
     
     for element in elements:
         elem_type = element.get("type", "")
@@ -241,16 +242,17 @@ def extract_loans_from_elements(elements: List[Dict]) -> Dict[str, Any]:
             
             # 提取余额（支持"余额"和"余额为"）
             balance_match = re.search(r'余额[为]?([\d,]+)', line)
-            if not balance_match:
-                continue
-            balance = clean_number(balance_match.group(1))
+            balance = clean_number(balance_match.group(1)) if balance_match else 0
             
             # 提取机构名
             inst_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日([^发放授信]+?)(?:发放|为)', line)
             institution = inst_match.group(1).strip() if inst_match else ''
             
+            # 【核心修正】只要是未结清的贷款/授信账户，都计入机构数
+            loans["count"] += 1
+            
+            # 只有余额>0时才累加余额
             if balance > 0:
-                loans["count"] += 1
                 loans["balance"] += balance / 10000
             
             # 分类
@@ -258,15 +260,18 @@ def extract_loans_from_elements(elements: List[Dict]) -> Dict[str, Any]:
             is_car = any(kw in line for kw in CAR_KEYWORDS)
             is_micro = is_micro_institution(institution) and not is_housing and not is_car
             
-            if is_housing and balance > 0:
+            if is_housing:
                 loans["housing_count"] += 1
-                loans["housing_balance"] += balance / 10000
-            elif is_car and balance > 0:
+                if balance > 0:
+                    loans["housing_balance"] += balance / 10000
+            elif is_car:
                 loans["car_count"] += 1
-                loans["car_balance"] += balance / 10000
-            elif is_micro and balance > 0:
+                if balance > 0:
+                    loans["car_balance"] += balance / 10000
+            elif is_micro:
                 loans["micro_count"] += 1
-                loans["micro_balance"] += balance / 10000
+                if balance > 0:
+                    loans["micro_balance"] += balance / 10000
             
             if "当前有逾期" in line:
                 loans["overdue_count"] += 1
@@ -695,7 +700,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v7_content_based"}
+    return {"status": "ok", "version": "v7_final_fixed"}
 
 
 @app.get("/")
