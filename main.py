@@ -43,7 +43,7 @@ BANK_KEYWORDS = [
     "招商银行", "浦发银行", "中信银行", "光大银行", "华夏银行",
     "民生银行", "广发银行", "平安银行", "兴业银行", "浙商银行",
     "邮储银行", "北京银行", "上海银行", "江苏银行", "宁波银行",
-    "南京银行", "杭州银行"
+    "南京银行", "杭州银行", "南昌农村商业银行", "江西万载农村商业银行"
 ]
 
 
@@ -176,31 +176,94 @@ def extract_overdue(text: str) -> Dict[str, int]:
     return overdue
 
 
-def extract_public_records(text: str) -> str:
+def extract_public_records(elements: List[Dict]) -> str:
+    """
+    从 elements 中提取公共记录（支持跨页表格）
+    """
     records = []
-    tax_match = re.search(r'## 欠税记录.*?欠税总额：([\d,]+)', text, re.DOTALL)
-    if tax_match:
-        amount = clean_number(tax_match.group(1))
-        records.append(f"欠税1条，金额{amount/10000:.2f}万元")
-    judgment_matches = re.findall(r'## 民事判决记录.*?诉讼标的金额：([\d,]+)', text, re.DOTALL)
-    if judgment_matches:
-        total = sum(clean_number(j) for j in judgment_matches)
-        records.append(f"民事判决{len(judgment_matches)}件，金额{total/10000:.2f}万元")
-    enforcement_matches = re.findall(r'## 强制执行记录.*?申请执行标的金额：([\d,]+)', text, re.DOTALL)
-    if enforcement_matches:
-        total = sum(clean_number(e) for e in enforcement_matches)
-        records.append(f"强制执行{len(enforcement_matches)}件，金额{total/10000:.2f}万元")
-    penalty_match = re.search(r'## 行政处罚记录.*?处罚金额：([\d,]+)', text, re.DOTALL)
-    if penalty_match:
-        amount = clean_number(penalty_match.group(1))
-        records.append(f"行政处罚1条，金额{amount/10000:.2f}万元")
+    
+    # 欠税记录（markdown）
+    for element in elements:
+        text = element.get("text", "")
+        if "欠税总额" in text:
+            match = re.search(r'欠税总额[：:]\s*([\d,]+)', text)
+            if match:
+                amount = clean_number(match.group(1))
+                records.append(f"欠税1条，金额{amount/10000:.2f}万元")
+                break
+    
+    # 民事判决记录（支持跨页表格）
+    judgment_total = 0
+    judgment_count = 0
+    in_judgment = False
+    for element in elements:
+        elem_type = element.get("type", "")
+        text = element.get("text", "")
+        
+        if "民事判决记录" in text and elem_type == "Title":
+            in_judgment = True
+            continue
+        
+        if in_judgment and elem_type == "Table":
+            table_structure = element.get("table_structure", {})
+            cells = table_structure.get("cells", [])
+            for cell in cells:
+                cell_text = cell.get("text", "")
+                match = re.search(r'诉讼标的金额[：:]\s*([\d,]+)', cell_text)
+                if match:
+                    judgment_total += clean_number(match.group(1))
+                    judgment_count += 1
+        elif in_judgment and "强制执行记录" in text:
+            break
+    
+    if judgment_count > 0:
+        records.append(f"民事判决{judgment_count}件，金额{judgment_total/10000:.2f}万元")
+    
+    # 强制执行记录（支持跨页表格）
+    enforcement_total = 0
+    enforcement_count = 0
+    in_enforcement = False
+    for element in elements:
+        elem_type = element.get("type", "")
+        text = element.get("text", "")
+        
+        if "强制执行记录" in text and elem_type == "Title":
+            in_enforcement = True
+            continue
+        
+        if in_enforcement and elem_type == "Table":
+            table_structure = element.get("table_structure", {})
+            cells = table_structure.get("cells", [])
+            for cell in cells:
+                cell_text = cell.get("text", "")
+                # 优先取"申请执行标的金额"
+                match = re.search(r'申请执行标的金额[：:]\s*([\d,]+)', cell_text)
+                if match:
+                    enforcement_total += clean_number(match.group(1))
+                    enforcement_count += 1
+        elif in_enforcement and "行政处罚记录" in text:
+            break
+    
+    if enforcement_count > 0:
+        records.append(f"强制执行{enforcement_count}件，金额{enforcement_total/10000:.2f}万元")
+    
+    # 行政处罚记录
+    for element in elements:
+        text = element.get("text", "")
+        if "处罚金额" in text:
+            match = re.search(r'处罚金额[：:]\s*([\d,]+)', text)
+            if match:
+                amount = clean_number(match.group(1))
+                records.append(f"行政处罚1条，金额{amount/10000:.2f}万元")
+                break
+    
     return "\n".join(records) if records else "无"
 
 
 def extract_loans_from_elements(elements: List[Dict]) -> Dict[str, Any]:
     """
     内容特征解析：直接扫描所有 NarrativeText，通过内容模式识别贷款
-    修正：余额为0但未结清的授信账户，计入机构数但不计入余额
+    修正：已结清账户严格排除
     """
     loans = {
         "count": 0, "balance": 0.0,
@@ -236,8 +299,8 @@ def extract_loans_from_elements(elements: List[Dict]) -> Dict[str, Any]:
             if "发放" not in line and "授信" not in line:
                 continue
             
-            # 排除已结清、已转出、销户
-            if "已结清" in line or "已转出" in line or "销户" in line:
+            # 【修复1】更严格的已结清检测（支持换行和空格）
+            if re.search(r'已\s*结\s*清', line) or "已转出" in line or "销户" in line:
                 continue
             
             # 提取余额（支持"余额"和"余额为"）
@@ -248,7 +311,7 @@ def extract_loans_from_elements(elements: List[Dict]) -> Dict[str, Any]:
             inst_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日([^发放授信]+?)(?:发放|为)', line)
             institution = inst_match.group(1).strip() if inst_match else ''
             
-            # 【核心修正】只要是未结清的贷款/授信账户，都计入机构数
+            # 只要是未结清的贷款/授信账户，都计入机构数
             loans["count"] += 1
             
             # 只有余额>0时才累加余额
@@ -358,9 +421,13 @@ def extract_credits_from_elements(elements: List[Dict]) -> Dict[str, Any]:
 
 
 def extract_guarantee_from_elements(elements: List[Dict]) -> Tuple[int, float]:
+    """
+    从 elements 中提取担保信息（支持表格和段落文本）
+    """
     count = 0
     balance = 0.0
     
+    # 方法1：从表格中提取
     for element in elements:
         if element.get("type") != "Table":
             continue
@@ -396,10 +463,44 @@ def extract_guarantee_from_elements(elements: List[Dict]) -> Tuple[int, float]:
                 else:
                     balance += amount / 10000
     
+    # 方法2：从段落文本中提取（企业担保）
+    for element in elements:
+        if element.get("type") != "NarrativeText":
+            continue
+        
+        text = element.get("text", "")
+        # 匹配担保信息模式
+        if "承担相关还款责任" not in text:
+            continue
+        
+        # 提取金额
+        amount_match = re.search(r'相关还款责任金额\s*([\d,]+)', text)
+        if not amount_match:
+            amount_match = re.search(r'相关还款责任金额\s*--', text)
+            if amount_match:
+                continue
+        
+        if amount_match:
+            count += 1
+            amount = clean_number(amount_match.group(1))
+            
+            # 提取余额
+            balance_match = re.search(r'贷款余额\s*([\d,]+)', text)
+            if balance_match:
+                loan_balance = clean_number(balance_match.group(1))
+                min_value = min(amount, loan_balance) if amount > 0 and loan_balance > 0 else amount
+                balance += min_value / 10000
+            else:
+                balance += amount / 10000
+    
     return count, balance
 
 
 def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -> Dict[str, int]:
+    """
+    从 elements 中提取查询记录（支持跨页表格自动合并，动态识别列顺序）
+    修复：识别"法人代表、负责人、高管等资信审查"等非标准查询原因
+    """
     queries = {
         "30d": 0, "31_90d": 0, "91_180d": 0, "181_360d": 0,
         "micro_60d": 0, "self_60d": 0
@@ -426,16 +527,21 @@ def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -
                 rows[row_num] = {}
             rows[row_num][col_num] = cell_text
         
+        # 判断表格类型
         is_inst_table = False
         is_self_table = False
         
         for row_data in rows.values():
             row_text = " ".join(str(v) for v in row_data.values())
-            if "贷款审批" in row_text or "贷后管理" in row_text or "信用卡审批" in row_text:
+            # 【修复3】扩展机构查询识别：包含这些关键词的视为机构查询表
+            if ("贷款审批" in row_text or "信用卡审批" in row_text or 
+                "贷后管理" in row_text or "资信审查" in row_text or
+                "担保资格审查" in row_text or "保前审查" in row_text):
                 is_inst_table = True
             if "本人查询" in row_text:
                 is_self_table = True
         
+        # 动态识别列顺序
         col_map = {"date": None, "institution": None, "reason": None}
         header_row = rows.get(1, {})
         if header_row:
@@ -476,8 +582,10 @@ def extract_queries_from_elements(elements: List[Dict], report_date: datetime) -
     
     # 统计机构查询
     for date, institution, reason in inst_rows:
+        # 排除贷后管理
         if "贷后管理" in reason:
             continue
+        
         try:
             date_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', date)
             if date_match:
@@ -531,7 +639,9 @@ def build_risk_warning(asset_count: int, asset_balance: float,
     if credits.get("abnormal_display"):
         warnings.append(credits["abnormal_display"])
     if public_records != "无":
-        warnings.append(public_records.replace("\n", "；"))
+        # 移除换行符，用分号连接
+        records_str = public_records.replace("\n", "；")
+        warnings.append(records_str)
     return "；".join(warnings) if warnings else "无"
 
 
@@ -630,7 +740,7 @@ async def analyze(file: UploadFile):
         overdue = extract_overdue(markdown_text)
         asset_count, asset_balance = extract_asset_disposal(markdown_text)
         advance_count, advance_amount = extract_advance_payment(markdown_text)
-        public_records = extract_public_records(markdown_text)
+        public_records = extract_public_records(elements)
         
         queries = extract_queries_from_elements(elements, report_date)
         
@@ -700,7 +810,7 @@ async def analyze(file: UploadFile):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "v7_final_fixed"}
+    return {"status": "ok", "version": "v8_all_fixes"}
 
 
 @app.get("/")
