@@ -971,9 +971,9 @@ def frontend():
     <div class="container">
         <h1>
             <span>📄</span>
-            征信报告AI分析
+            征信结构解读
         </h1>
-        <p class="desc">上传PDF格式的个人信用报告，系统将自动解析并生成专业风控报告。</p>
+        <p class="desc">上传PDF格式的个人简版信用报告，系统将自动解析并生成专业风控报告。</p>
 
         <div class="upload-area" id="uploadArea">
             <div class="upload-icon">📎</div>
@@ -993,7 +993,7 @@ def frontend():
         </div>
 
         <div class="info-note">
-            💡 提示：分析结果包含两部分 — 简要汇总 + AI展开分析
+            💡 提示：分析结果包含两部分 — 简要汇总 + 展开分析
         </div>
         <div class="bottom-space"></div>
     </div>
